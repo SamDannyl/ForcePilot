@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ForcePilot</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #667085;
+      --subtle: #98a2b3;
+      --line: #e4e7ec;
+      --blue: #1677e8;
+      --blue-hover: #0f68d1;
+      --surface: #fff;
+      --bg: #f8f9fb;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      width: 340px;
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI",
+                   Roboto, Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button {
+      font: inherit;
+    }
+
+    .popup {
+      padding: 16px;
+    }
+
+    /* Compact extension header */
+    .popup-header {
+      height: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 17px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .brand .icon {
+      width: 25px;
+      height: 25px;
+      object-fit: contain;
+    }
+
+    .brand .word {
+      width: 82px;
+      height: auto;
+      display: block;
+    }
+
+    .status {
+      color: #667085;
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    /* Simple connection row — deliberately not a card */
+    .connection {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 42px;
+      padding: 0 1px;
+      margin-bottom: 20px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      flex: 0 0 8px;
+      border-radius: 50%;
+      background: #98a2b3;
+      box-shadow: 0 0 0 3px #e9edf2;
+    }
+
+    .status-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0;
+    }
+
+    .status-copy strong {
+      font-size: 12px;
+      line-height: 16px;
+      font-weight: 650;
+    }
+
+    .status-copy span {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 16px;
+    }
+
+    /* Main content sits directly on the popup background */
+    .intro {
+      margin-bottom: 15px;
+    }
+
+    .intro h1 {
+      margin: 0;
+      max-width: 290px;
+      font-size: 17px;
+      line-height: 22px;
+      letter-spacing: -.015em;
+      font-weight: 650;
+    }
+
+    .intro p {
+      margin: 5px 0 0;
+      max-width: 292px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 16px;
+    }
+
+    .open-button {
+      width: 100%;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border: 0;
+      border-radius: 8px;
+      background: var(--blue);
+      color: white;
+      font-size: 13px;
+      font-weight: 650;
+      cursor: pointer;
+      box-shadow: 0 2px 5px rgba(22,119,232,.18);
+      transition: background .15s ease, transform .1s ease;
+    }
+
+    .open-button:hover {
+      background: var(--blue-hover);
+    }
+
+    .open-button:active {
+      transform: translateY(1px);
+    }
+
+    .open-icon {
+      width: 16px;
+      height: 16px;
+      display: grid;
+      place-items: center;
+    }
+
+    .open-icon svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor;
+    }
+
+    /* Quiet secondary navigation */
+    .manage-link {
+      width: 100%;
+      min-height: 48px;
+      display: grid;
+      grid-template-columns: 28px 1fr 12px;
+      align-items: center;
+      gap: 9px;
+      margin-top: 7px;
+      padding: 5px 3px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--ink);
+      text-align: left;
+      cursor: pointer;
+      transition: background .15s ease;
+    }
+
+    .manage-link:hover {
+      background: #eef1f5;
+    }
+
+    .manage-icon {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      color: #475467;
+    }
+
+    .manage-icon svg {
+      width: 16px;
+      height: 16px;
+      fill: currentColor;
+    }
+
+    .manage-link strong {
+      display: block;
+      font-size: 12px;
+      line-height: 16px;
+      font-weight: 650;
+    }
+
+    .manage-link small {
+      display: block;
+      margin-top: 0;
+      color: var(--muted);
+      font-size: 10.5px;
+      line-height: 15px;
+    }
+
+    .manage-arrow {
+      color: #98a2b3;
+      font-size: 18px;
+      line-height: 1;
+      text-align: right;
+    }
+
+    .fp-attribution {
+      margin-top: 14px;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+      color: var(--subtle);
+      font-size: 9px;
+      line-height: 13px;
+      text-align: center;
+    }
+
+    .fp-attribution span {
+      display: block;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="popup">
+    <header class="popup-header">
+      <div class="brand">
+        <img src="branding/forcepilot-icon.png" class="icon" alt="ForcePilot">
+        <img src="branding/forcepilot-wordmark.png" class="word" alt="ForcePilot">
+      </div>
+      <span id="status" class="status">Checking…</span>
+    </header>
+
+    <main>
+      <section class="connection" aria-live="polite">
+        <span id="statusDot" class="status-dot"></span>
+        <div class="status-copy">
+          <strong id="connectionTitle">Checking connection</strong>
+          <span id="connectionDetail">Checking this tab…</span>
+        </div>
+      </section>
+
+      <section class="intro">
+        <h1 id="heroTitle">Record &amp; autofill Salesforce fields</h1>
+        <p id="heroDetail"><em>Record field changes and autofill them later from the ForcePilot sidebar.</em></p>
+      </section>
+
+      <button class="primary open-button" id="open">
+        <span class="open-icon" aria-hidden="true">
+          <svg viewBox="0 0 20 20">
+            <path d="M10 2.8a7.2 7.2 0 1 0 0 14.4 7.2 7.2 0 0 0 0-14.4Zm3.5 6.4H11V6.7h-2v2.5H6.5v2H9v2.1h2v-2.1h2.5v-2Z"/>
+          </svg>
+        </span>
+        <span id="openLabel">Launch ForcePilot</span>
+      </button>
+
+      <button class="manage-link" id="manage">
+        <span class="manage-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path d="M19.43 12.98c.04-.32.07-.65.07-.98s-.02-.66-.07-.98l2.11-1.65a.5.5 0 0 0 .12-.64l-2-3.46a.5.5 0 0 0-.61-.22l-2.49 1a7.2 7.2 0 0 0-1.7-.98L14.5 2.42A.5.5 0 0 0 14 2h-4a.5.5 0 0 0-.5.42L9.12 5.07c-.61.25-1.18.58-1.7.98l-2.49-1a.5.5 0 0 0-.61.22l-2 3.46a.5.5 0 0 0 .12.64l2.11 1.65c-.04.32-.08.65-.08.98s.03.66.08.98l-2.11 1.65a.5.5 0 0 0-.12.64l2 3.46c.11.19.34.27.55.19l2.49-1c.52.4 1.09.73 1.7.98l.38 2.65c.03.24.24.42.5.42h4c.25 0 .46-.18.5-.42l.38-2.65c.61-.25 1.18-.58 1.7-.98l2.49 1c.21.08.44 0 .55-.19l2-3.46a.5.5 0 0 0-.12-.64l-2.11-1.65ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"/>
+          </svg>
+        </span>
+        <span>
+          <strong>Manage recordings</strong>
+          <small>Edit, rename, or remove your recordings</small>
+        </span>
+        <span class="manage-arrow" aria-hidden="true">›</span>
+      </button>
+    </main>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
