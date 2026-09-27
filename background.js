@@ -6,7 +6,7 @@
  * Not affiliated with Salesforce, Inc.
  */
 
-const LOCK_KEY = 'forcepilot.recording.lock.v1';
+const LOCK_KEY = 'forcepilot.recording.locks.v2';
 const injectionFlights = new Map();
 let lockMutation = Promise.resolve();
 const withLockMutation = fn => {
@@ -27,23 +27,13 @@ function isSalesforceUrl(url=''){
   }catch{return false;}
 }
 
-async function getLock(){
-  try{
-    const d=await chrome.storage.session.get(LOCK_KEY);
-    return d[LOCK_KEY] || null;
-  }catch{return null;}
-}
-async function setLock(lock){
-  try{await chrome.storage.session.set({[LOCK_KEY]:lock});}catch{}
-}
-async function clearLock(){
-  try{await chrome.storage.session.remove(LOCK_KEY);}catch{}
-}
-async function lockOwnerIsValid(lock){
-  if(!lock?.tabId) return false;
-  const tab=await chrome.tabs.get(lock.tabId).catch(()=>null);
-  return !!tab?.id && isSalesforceUrl(tab.url||'');
-}
+async function getLocks(){try{const d=await chrome.storage.session.get(LOCK_KEY);return d[LOCK_KEY]&&typeof d[LOCK_KEY]==='object'?d[LOCK_KEY]:{};}catch{return{}}}
+async function setLocks(locks){try{await chrome.storage.session.set({[LOCK_KEY]:locks});}catch{}}
+const lockScope=(windowId,incognito)=>`${Number(windowId||0)}:${incognito?'incognito':'normal'}`;
+async function getLock(windowId,incognito){const locks=await getLocks();return locks[lockScope(windowId,incognito)]||null;}
+async function setLock(windowId,incognito,lock){const locks=await getLocks();locks[lockScope(windowId,incognito)]=lock;await setLocks(locks);}
+async function clearLock(windowId,incognito){const locks=await getLocks();delete locks[lockScope(windowId,incognito)];await setLocks(locks);}
+async function lockOwnerIsValid(lock){if(!lock?.tabId)return false;const tab=await chrome.tabs.get(lock.tabId).catch(()=>null);return !!tab?.id&&isSalesforceUrl(tab.url||'')&&Number(tab.windowId)===Number(lock.windowId)&&!!tab.incognito===!!lock.incognito;}
 
 async function ensureContentScripts(tabId){
   if(injectionFlights.has(tabId)) return injectionFlights.get(tabId);
@@ -79,15 +69,17 @@ chrome.action.onClicked.addListener(async tab=>{
 });
 
 chrome.tabs.onRemoved.addListener(async tabId=>{
-  const lock=await getLock();
-  if(lock?.tabId===tabId) await clearLock();
   injectionFlights.delete(tabId);
+  const locks=await getLocks();let changed=false;
+  for(const [scope,lock] of Object.entries(locks)){if(lock?.tabId===tabId){delete locks[scope];changed=true;}}
+  if(changed)await setLocks(locks);
 });
 
-chrome.tabs.onUpdated.addListener(async(tabId,changeInfo)=>{
+chrome.tabs.onUpdated.addListener(async(tabId,changeInfo,tab)=>{
   if(changeInfo.status!=='loading') return;
-  const lock=await getLock();
-  if(lock?.tabId===tabId) await clearLock();
+  const locks=await getLocks();let changed=false;
+  for(const [scope,lock] of Object.entries(locks)){if(lock?.tabId===tabId){delete locks[scope];changed=true;}}
+  if(changed)await setLocks(locks);
 });
 
 chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
@@ -98,14 +90,16 @@ chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
       if(!senderTabId || !isSalesforceUrl(sender.tab?.url||'')){
         return sendResponse({ok:false,code:'SALESFORCE_ONLY',message:'Recording is available only on Salesforce.'});
       }
-      const existing=await getLock();
-      if(existing && !(await lockOwnerIsValid(existing))) await clearLock();
-      const current=await getLock();
+      const scopeWindowId=Number(sender.tab?.windowId||msg.windowId||0);
+      const incognito=!!sender.tab?.incognito||!!msg.incognito;
+      const existing=await getLock(scopeWindowId,incognito);
+      if(existing && !(await lockOwnerIsValid(existing))) await clearLock(scopeWindowId,incognito);
+      const current=await getLock(scopeWindowId,incognito);
       if(current?.tabId && current.tabId!==senderTabId){
-        return sendResponse({ok:false,code:'RECORDING_IN_OTHER_TAB',tabId:current.tabId,message:'A recording is already active in another Salesforce tab.'});
+        return sendResponse({ok:false,code:'RECORDING_IN_OTHER_TAB',tabId:current.tabId,windowId:scopeWindowId,message:'A recording is already active in this window.'});
       }
-      const lock={tabId:senderTabId,startedAt:current?.startedAt||Date.now()};
-      await setLock(lock);
+      const lock={tabId:senderTabId,windowId:scopeWindowId,incognito,startedAt:current?.startedAt||Date.now()};
+      await setLock(scopeWindowId,incognito,lock);
       sendResponse({ok:true,...lock});
     }).catch(()=>sendResponse({ok:false,code:'LOCK_ERROR',message:'Could not start recording.'}));
     return true;
@@ -113,18 +107,22 @@ chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
 
   if(msg?.type==='RELEASE_RECORDING_LOCK'){
     withLockMutation(async()=>{
-      const lock=await getLock();
+      const scopeWindowId=Number(sender.tab?.windowId||msg.windowId||0);
+      const incognito=!!sender.tab?.incognito||!!msg.incognito;
+      const lock=await getLock(scopeWindowId,incognito);
       const requestedTabId=Number(msg?.tabId||0);
-      if(!lock || lock.tabId===senderTabId || (requestedTabId && lock.tabId===requestedTabId)) await clearLock();
+      if(!lock || lock.tabId===senderTabId || (requestedTabId && lock.tabId===requestedTabId)) await clearLock(scopeWindowId,incognito);
       sendResponse({ok:true});
     }).catch(()=>sendResponse({ok:true}));
     return true;
   }
 
   if(msg?.type==='GET_RECORDING_LOCK'){
-    getLock().then(async lock=>{
-      if(lock && !(await lockOwnerIsValid(lock))){await clearLock();lock=null;}
-      sendResponse({recordingTabId:lock?.tabId||null,recordingStartedAt:lock?.startedAt||null});
+    const scopeWindowId=Number(msg?.windowId||sender.tab?.windowId||0);
+    const incognito=!!msg?.incognito||!!sender.tab?.incognito;
+    getLock(scopeWindowId,incognito).then(async lock=>{
+      if(lock && !(await lockOwnerIsValid(lock))){await clearLock(scopeWindowId,incognito);lock=null;}
+      sendResponse({recordingTabId:lock?.tabId||null,recordingStartedAt:lock?.startedAt||null,windowId:scopeWindowId,incognito});
     }).catch(()=>sendResponse({recordingTabId:null,recordingStartedAt:null}));
     return true;
   }

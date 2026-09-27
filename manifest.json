@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "ForcePilot - Salesforce Record Autofill",
-  "version": "1.3",
+  "version": "1.5",
   "description": "Record Salesforce field values and reuse them to autofill similar records.",
-  "incognito": "spanning",
+  "incognito": "split",
   "permissions": [
     "storage",
     "scripting",
-    "sidePanel"
+    "sidePanel",
+    "unlimitedStorage"
   ],
   "host_permissions": [
     "https://*.salesforce.com/*",

@@ -10,9 +10,9 @@
   'use strict';
   if(window.__FORCEPILOT_BRIDGE_READY__) return;
   window.__FORCEPILOT_BRIDGE_READY__=true;
-  const HOST_RE=/^(?:[^.]+\.)*(?:salesforce\.com|visualforce\.com|lightning\.force\.com|my\.salesforce\.com)$/i;
+  const HOST_RE=/^(?:[^.]+\.)*(?:salesforce\.com|visualforce\.com|vf\.force\.com|lightning\.force\.com|my\.salesforce\.com)$/i;
   if(!HOST_RE.test(location.hostname)) return;
-  const BUILD='1.3';
+  const BUILD='1.5';
   const challenges=new Map();
   const requests=new Set();
   const targetIds=new WeakMap();
@@ -21,7 +21,7 @@
   const MAX_TEXT=2000;
   const sleep=ms=>new Promise(r=>setTimeout(r,ms));
   const norm=v=>String(v??'').trim().toLowerCase();
-  const validId=v=>typeof v==='string'&&/^sensei-[a-z0-9-]{8,80}$/i.test(v);
+  const validId=v=>typeof v==='string'&&(/^(?:forcepilot|sensei)-[a-z0-9-]{8,80}$/i.test(v));
   const validRequest=v=>typeof v==='string'&&/^req-[a-z0-9-]{8,120}$/.test(v);
   const validValues=v=>Array.isArray(v)&&v.length>0&&v.length<=100&&v.every(x=>typeof x==='string'&&x.trim()&&x.length<=MAX_TEXT);
   const readable=el=>{try{return String(el?.textContent||'').replace(/\s+/g,' ').trim().slice(0,MAX_TEXT)}catch{return''}};
@@ -49,7 +49,7 @@
     targetById.delete(id);
     const escaped=String(id).replace(/([#.;?+*~':"^$[\]()=>|\\])/g,'\\$1');
     for(const root of [document,...rootsFor(document).slice(1)]){
-      try{const el=root.querySelector?.(`[data-ss-target-id="${escaped}"]`);if(el?.isConnected){register(el,id);return el;}}catch{}
+      try{const el=root.querySelector?.(`[data-forcepilot-target-id="${escaped}"],[data-ss-target-id="${escaped}"]`);if(el?.isConnected){register(el,id);return el;}}catch{}
     }
     return null;
   }
@@ -57,10 +57,10 @@
   function allowedTarget(el){
     if(!el)return false;
     const tag=String(el.tagName||'').toLowerCase();
-    if(/^(lightning-dual-listbox|lightning:dualListbox|lightning-combobox|lightning-base-combobox|lightning-input-field)$/.test(tag))return true;
+    if(/^(lightning-dual-listbox|lightning:dualListbox|lightning-combobox|lightning-base-combobox|lightning-input-field|lightning-lookup|lightning-record-picker)$/.test(tag))return true;
     try{
       if(el.closest?.('lightning-dual-listbox,lightning-combobox,lightning-base-combobox,lightning-input-field,lightning\\:dualListbox'))return true;
-      if(el.querySelector?.('lightning-combobox,lightning-base-combobox,lightning-dual-listbox'))return true;
+      if(el.querySelector?.('lightning-combobox,lightning-base-combobox,lightning-dual-listbox,lightning-lookup,lightning-record-picker'))return true;
     }catch{return false;}
     return false;
   }
@@ -98,7 +98,7 @@
       seen.add(list);raw.push(list);
     };
     for(const root of rootsFor(dual)){
-      try{root.querySelectorAll?.('[role="listbox"],.slds-dueling-list__options,[aria-multiselectable="true"],ul.slds-listbox').forEach(add);}catch{}
+      try{root.querySelectorAll?.('[data-source-list],[data-selected-list],[role="listbox"],.slds-dueling-list__options,[aria-multiselectable="true"],ul.slds-listbox').forEach(add);}catch{}
     }
     const items=raw.map((list,index)=>{
       let rect={left:index,top:0,width:0,height:0};try{rect=list.getBoundingClientRect?.()||rect;}catch{}
@@ -109,9 +109,13 @@
 
   function classifyLists(dual){
     const items=listBoxes(dual);if(!items.length)return {source:null,selected:null};
+    const sourceAttr=items.find(x=>x.list?.hasAttribute?.('data-source-list'))||null;
+    const selectedAttr=items.find(x=>x.list?.hasAttribute?.('data-selected-list'))||null;
     const ordered=[...items].sort((a,b)=>(a.rect.left||0)-(b.rect.left||0));
-    let source=items.find(x=>/\b(?:available|source)\b/.test(x.label))||ordered[0]||null;
-    let selected=items.find(x=>/\b(?:selected|chosen|current)\b/.test(x.label)&&x!==source)||ordered.find(x=>x!==source)||null;
+    let source=sourceAttr||items.find(x=>/\b(?:available|source)\b/.test(x.label))||null;
+    let selected=selectedAttr||items.find(x=>/\b(?:selected|chosen|current)\b/.test(x.label)&&x!==source)||null;
+    if(!source&&!selected&&items.length===1){const only=items[0];if(/\b(?:selected|chosen|current)\b/.test(only.label))selected=only;else source=only;}
+    if(!source&&!selected&&items.length>1){source=ordered[0]||null;selected=ordered[1]||null;}
     if(source&&selected&&(source.rect.left||0)>(selected.rect.left||0)){const t=source;source=selected;selected=t;}
     return {source,selected};
   }
@@ -303,13 +307,13 @@
           fireClickSequence(candidate,{scroll:false});
           await sleep(90);
           const trigger=comboTrigger(root);
-          const triggerText=norm(trigger?.getAttribute?.('data-value')||trigger?.getAttribute?.('aria-label')||readable(trigger));
+          const triggerText=norm(trigger?.getAttribute?.('data-value')||readable(trigger));
           const selected=comboOptions(root).find(o=>o.el.getAttribute?.('aria-selected')==='true');
           if(triggerText===wanted || triggerText.includes(wanted) || (norm(hit.value)===norm(value) && (selected?.value===hit.value || selected?.label===hit.label))){
             return{ok:true,mode:'native-click',selected:hit.label||hit.value};
           }
           if(!comboOpen(root)){
-            const t=norm(trigger?.getAttribute?.('data-value')||trigger?.getAttribute?.('aria-label')||readable(trigger));
+            const t=norm(trigger?.getAttribute?.('data-value')||readable(trigger));
             if(t===wanted || t.includes(wanted) || norm(hit.label)===wanted || norm(hit.value)===wanted){
               return{ok:true,mode:'native-click',selected:hit.label||hit.value};
             }
@@ -322,6 +326,118 @@
     return{ok:false,reason:'Requested picklist option could not be activated'};
   }
 
+  function lookupInput(root){
+    for(const r of rootsFor(root)){
+      try{
+        const x=r.querySelector?.('input[role="combobox"][data-value="lookup"],input[role="combobox"].slds-combobox__input, input[role="combobox"], input.slds-combobox__input[autocomplete="off"]');
+        if(x)return x;
+      }catch{}
+    }
+    return null;
+  }
+  function lookupRecordId(el){
+    if(!el)return '';
+    for(const a of ['data-record-id','data-recordid','data-record-id-value','data-id','record-id','data-lookup-id','data-selection-id']){
+      try{const v=el.getAttribute?.(a);if(v&&/^[A-Za-z0-9]{15,18}$/.test(String(v).trim()))return String(v).trim();}catch{}
+    }
+    try{
+      const href=el.getAttribute?.('href')||el.querySelector?.('a[href*="/lightning/r/"]')?.getAttribute?.('href')||'';
+      const m=String(href).match(/\/lightning\/r\/[^/]+\/([A-Za-z0-9]{15,18})(?:\/|$)/i);
+      return m?.[1]||'';
+    }catch{return ''}
+  }
+  function lookupOptions(root){
+    const out=[],seen=new Set();
+    const input=lookupInput(root);
+    const roots=[];
+    const addRoot=x=>{if(x&& !roots.includes(x))roots.push(x)};
+    for(const r of rootsFor(root))addRoot(r);
+    const id=input?.getAttribute?.('aria-controls');
+    if(id){try{addRoot(document.getElementById(id));}catch{}for(const r of rootsFor(root)){try{addRoot(r.querySelector?.(`#${CSS.escape(id)}`));}catch{}}}
+    addRoot(document);
+    const add=el=>{if(!el||seen.has(el))return;const rect=el.getBoundingClientRect?.();if(!rect||rect.width<=0||rect.height<=0)return;const label=norm(el.getAttribute?.('data-label')||el.getAttribute?.('label')||el.getAttribute?.('title')||readable(el));if(!label||/^(show all results|create new|recent records|search all)$/i.test(label))return;seen.add(el);out.push({el,label,id:lookupRecordId(el)});};
+    for(const r of roots){try{r.querySelectorAll?.('[role="option"],lightning-base-combobox-item,.slds-listbox__option,.slds-listbox__item,[data-option-index]').forEach(add);}catch{}}
+    return out;
+  }
+  async function setInputValue(input,value){
+    if(!input)return false;
+    const text=String(value||'');
+    try{input.focus?.();input.click?.();}catch{}
+    const proto=Object.getPrototypeOf(input),desc=Object.getOwnPropertyDescriptor(proto,'value');
+    const set=v=>{try{desc?.set?desc.set.call(input,v):input.value=v;return true}catch{return false}};
+    const key=(type,k,mods={})=>{try{input.dispatchEvent(new KeyboardEvent(type,{key:k,code:k.length===1?'Key'+k.toUpperCase():k,bubbles:true,composed:true,ctrlKey:!!mods.ctrl,metaKey:!!mods.meta}));}catch{}};
+    key('keydown','Control',{ctrl:true});key('keydown','a',{ctrl:true});key('keyup','a',{ctrl:true});key('keyup','Control',{ctrl:true});
+    set('');try{input.dispatchEvent(new InputEvent('input',{bubbles:true,composed:true,inputType:'deleteContentBackward',data:null}));}catch{}
+    for(const ch of text){
+      key('keydown',ch);set(String(input.value||'')+ch);
+      try{input.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,composed:true,inputType:'insertText',data:ch}));}catch{}
+      try{input.dispatchEvent(new InputEvent('input',{bubbles:true,composed:true,inputType:'insertText',data:ch}));}catch{try{input.dispatchEvent(new Event('input',{bubbles:true,composed:true}));}catch{}}
+      key('keyup',ch);await sleep(18);
+    }
+    try{input.dispatchEvent(new Event('change',{bubbles:true,composed:true}));}catch{}
+    return true;
+  }
+  function lookupLabelMatches(actual,expected){
+    const a=norm(actual||''),e=norm(expected||'');
+    return !!a&&!!e&&a===e;
+  }
+  async function activateLookupOption(root,hit,input,index,expectedLabel){
+    if(!hit?.el)return false;
+    const candidates=[hit.el];
+    try{hit.el.querySelectorAll?.('button,a,[role=option],lightning-base-combobox-item,.slds-listbox__option,.slds-listbox__item,.slds-truncate').forEach(x=>{if(!candidates.includes(x))candidates.push(x);});}catch{}
+    for(const candidate of candidates){
+      fireClickSequence(candidate,{scroll:false});
+      await sleep(150);
+      const trigger=comboTrigger(root);
+      const live=norm(trigger?.getAttribute?.('data-value')||readable(trigger||''));
+      if(live===norm(expectedLabel)||live.includes(norm(expectedLabel))||!lookupInput(root))return true;
+      if(trigger?.getAttribute?.('aria-expanded')==='false')return true;
+    }
+    try{
+      input?.focus?.({preventScroll:true});
+      const n=Math.max(0,Number(index)||0);
+      input.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',code:'Home',bubbles:true,composed:true}));
+      input.dispatchEvent(new KeyboardEvent('keyup',{key:'Home',code:'Home',bubbles:true,composed:true}));
+      for(let i=0;i<=n;i++){
+        input.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',code:'ArrowDown',bubbles:true,composed:true}));
+        input.dispatchEvent(new KeyboardEvent('keyup',{key:'ArrowDown',code:'ArrowDown',bubbles:true,composed:true}));
+        await sleep(25);
+      }
+      input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true,composed:true}));
+      input.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',bubbles:true,composed:true}));
+      await sleep(160);
+      const trigger=comboTrigger(root);
+      const live=norm(trigger?.getAttribute?.('data-value')||readable(trigger||''));
+      return !lookupInput(root)||live===norm(expectedLabel)||live.includes(norm(expectedLabel))||trigger?.getAttribute?.('aria-expanded')==='false';
+    }catch{return false;}
+  }
+
+  async function setLookup(root,payload){
+    const wanted=typeof payload==='object'&&payload?payload:{displayValue:String(payload??''),recordId:''};
+    const label=norm(wanted.displayValue||wanted.label||wanted.name||'');
+    const expectedId=String(wanted.recordId||'').trim();
+    if(!label&&!expectedId)return{ok:false,reason:'Empty lookup value'};
+    const input=lookupInput(root);if(!input)return{ok:false,reason:'Lookup search input could not be found'};
+    try{input.focus?.({preventScroll:true});input.click?.()}catch{}
+    if(!(await setInputValue(input,label||expectedId)))return{ok:false,reason:'Lookup search input could not be updated'};
+    for(let attempt=0;attempt<16;attempt++){
+      await sleep(Math.min(70+attempt*20,210));
+      const options=lookupOptions(root);
+      const idHits=expectedId?options.filter(o=>o.id===expectedId):[];
+      const labelHits=label?options.filter(o=>lookupLabelMatches(o.label,label)):[];
+      const hits=idHits.length?idHits:labelHits;
+      if(hits.length>1)return{ok:false,reason:`Multiple lookup results matched ${wanted.displayValue||wanted.recordId}`};
+      const hit=hits[0];
+      if(!hit)continue;
+      const candidates=[hit.el];try{hit.el.querySelectorAll?.('[role="option"],lightning-base-combobox-item,button,a,.slds-listbox__option,.slds-listbox__item,.slds-truncate').forEach(x=>{if(!candidates.includes(x))candidates.push(x);});}catch{}
+      let clicked=false;
+      for(const candidate of candidates){fireClickSequence(candidate,{scroll:false});await sleep(80);clicked=true;const trigger=comboTrigger(root);const actualId=lookupRecordId(trigger)||lookupRecordId(root);if(!input.isConnected||trigger?.getAttribute?.('aria-expanded')==='false'||(expectedId&&actualId===expectedId))return{ok:true,mode:expectedId?'lookup-id-click':'lookup-label-click',selected:hit.label};}
+      if(!clicked)continue;
+      try{input.focus?.({preventScroll:true});input.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',code:'ArrowDown',bubbles:true,composed:true}));input.dispatchEvent(new KeyboardEvent('keyup',{key:'ArrowDown',code:'ArrowDown',bubbles:true,composed:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true,composed:true}));input.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',bubbles:true,composed:true}));}catch{}
+      await sleep(100);const trigger=comboTrigger(root);const actualId=lookupRecordId(trigger)||lookupRecordId(root);if(!input.isConnected||trigger?.getAttribute?.('aria-expanded')==='false'||(expectedId&&actualId===expectedId))return{ok:true,mode:expectedId?'lookup-id-keyboard':'lookup-label-keyboard',selected:hit.label};
+    }
+    return{ok:false,reason:`Lookup result not found for ${wanted.displayValue||wanted.recordId}`};
+  }
   async function setMulti(dual,values){
     const wanted=[...new Set(values.map(v=>String(v).trim()).filter(Boolean))];
     if(!validValues(wanted))return{ok:false,reason:'Invalid multi-select values'};
@@ -388,15 +504,15 @@
     return{ok:false,reason:'Salesforce did not confirm the selected multi-select values'};
   }
 
-  window.addEventListener('ss-sensei-bridge-init',event=>{
+  window.addEventListener('forcepilot-bridge-init',event=>{
     const d=event.detail||{};
-    if(d.version!==BUILD||!validRequest(d.requestId)||!validId(d.id)||!['set-pick','set-multi','set-pick-index'].includes(d.action))return;
+    if(d.version!==BUILD||!validRequest(d.requestId)||!validId(d.id)||!['set-pick','set-multi','set-pick-index','set-lookup'].includes(d.action))return;
     if(typeof d.token!=='string'||d.token.length<16||d.token.length>200)return;
     challenges.set(d.requestId,{token:d.token,id:d.id,action:d.action,expiresAt:Number(d.expiresAt||Date.now()+2500)});
     for(const [k,v] of challenges){if(v.expiresAt<Date.now())challenges.delete(k)}
   },{capture:true});
 
-  window.addEventListener('ss-sensei-page-action',/** @param {CustomEvent<any>} event */async event=>{
+  window.addEventListener('forcepilot-page-action',/** @param {CustomEvent<any>} event */async event=>{
     const d=event.detail||{};
     const challenge=challenges.get(d.requestId);
     if(!challenge||challenge.expiresAt<Date.now()||challenge.token!==d.token||challenge.id!==d.id||challenge.action!==d.action||d.version!==BUILD||!validRequest(d.requestId)||requests.has(d.requestId)||!validId(d.id))return;
@@ -404,19 +520,24 @@
     if(d.action==='set-multi' && !validValues(d.value))return;
     if(d.action==='set-pick' && !(typeof d.value==='string'&&d.value.trim()&&d.value.length<=MAX_TEXT))return;
     if(d.action==='set-pick-index' && !(Number.isInteger(Number(d.value))&&Number(d.value)>=1&&Number(d.value)<=100))return;
-    if(d.action!=='set-multi'&&d.action!=='set-pick'&&d.action!=='set-pick-index')return;
+    if(d.action==='set-lookup' && !(d.value&&typeof d.value==='object'&&String(d.value.displayValue||d.value.label||d.value.name||d.value.recordId||'').trim()))return;
+    if(d.action!=='set-multi'&&d.action!=='set-pick'&&d.action!=='set-pick-index'&&d.action!=='set-lookup')return;
     requests.add(d.requestId);pruneTargets();
     /** @type {any} */ let result={ok:false,reason:'Bridge request rejected'};
     try{
       const target=findTarget(d.id);
       if(target&&target.isConnected&&allowedTarget(target)){
-        result=d.action==='set-multi' ? await setMulti(target,d.value) : d.action==='set-pick-index' ? await setPickByIndex(target,Number(d.value)) : await setPick(target,d.value);
+        result=d.action==='set-multi' ? await setMulti(target,d.value) : d.action==='set-pick-index' ? await setPickByIndex(target,Number(d.value)) : d.action==='set-lookup' ? await setLookup(target,d.value) : await setPick(target,d.value);
       } else if(!target)result={ok:false,reason:'Bridge target unavailable'};
       else result={ok:false,reason:'Bridge target is not a supported Salesforce Lightning control'};
     }catch(e){result={ok:false,reason:String(e?.message||'Bridge error').slice(0,200)};}
     finally{
       requests.delete(d.requestId);
-      window.dispatchEvent(new CustomEvent('ss-sensei-page-result',{detail:{requestId:d.requestId,version:BUILD,result}}));
+      window.dispatchEvent(new CustomEvent('forcepilot-page-result',{detail:{requestId:d.requestId,version:BUILD,result}}));
     }
   },{capture:true});
+
+  // Compatibility: accept legacy event names while emitting the current protocol.
+  window.addEventListener('ss-sensei-bridge-init', event=>window.dispatchEvent(new CustomEvent('forcepilot-bridge-init',{detail:event.detail})));
+  window.addEventListener('ss-sensei-page-action', event=>window.dispatchEvent(new CustomEvent('forcepilot-page-action',{detail:event.detail})));
 })();

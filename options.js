@@ -6,10 +6,11 @@
  * Not affiliated with Salesforce, Inc.
  */
 
-const STORAGE_KEY='forcepilot.settings.v1',RECORDINGS_KEY='forcepilot.recordings.v1';
+import { icon } from './src/material-icons.js';
+import { STORAGE_KEY as RECORDINGS_KEY, SETTINGS_KEY as STORAGE_KEY, getRecordings, getSettings, saveRecordings, saveSettings, SCHEMA_VERSION, normalizeStoredRecordings } from './src/shared-module.js';
 const DEFAULTS={stopOnFailure:false,verifyAfterReplay:true,fillEmptyOnly:true,showOverlay:true,dateRelativeToToday:true};
 const app=document.getElementById('app');
-let recordings={},selectedId=null,settings={...DEFAULTS},editing=false,draft=null,snapshot=null,activeSection='recordings',recordingSearch='',fieldSearch='';
+let recordings={},selectedId=null,settings={...DEFAULTS},editing=false,draft=null,snapshot=null,activeSection='recordings',recordingSearch='',fieldSearch='',pendingConfirmation=null;
 
 const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 const clone=v=>JSON.parse(JSON.stringify(v));
@@ -19,6 +20,7 @@ const normalizeType=s=>{const r=rawTypes(s).find(v=>!['text','string','field','i
 const typeLabel=s=>{const raws=rawTypes(s);if(raws.includes('currency'))return'Currency';if(raws.includes('percent'))return'Percent';const t=normalizeType(s);return({checkbox:'Checkbox',picklist:'Picklist',multipicklist:'Multipicklist',text:'Text',number:'Number',date:'Date',datetime:'Date/Time',time:'Time',lookup:'Lookup'}[t]||'Text')};
 const display=v=>Array.isArray(v)?v.join('; '):v&&typeof v==='object'?(v.displayValue||'—'):String(v??'');
 const cleanEditedValue=(s,v)=>['Currency','Percent','Number'].includes(typeLabel(s))?cleanNumber(v):v;
+const apiDisplayName=s=>{const raw=String(s?.target?.apiName||s?.target?.fieldPath||s?.target?.key||'').trim();if(!raw)return'';const parts=raw.split('.').filter(Boolean);return parts[parts.length-1]||raw};
 const optionList=s=>Array.isArray(s?.target?.options)?s.target.options:[];
 const valuesArray=v=>Array.isArray(v)?v:String(v??'').split(/\s*;\s*|\s*,\s*/).map(x=>x.trim()).filter(Boolean);
 const dateOffsetLabel=offset=>{const n=Number(offset);if(!Number.isFinite(n))return'';if(n===0)return'Today';return`Today ${n>0?'+':'-'} ${Math.abs(n)} day${Math.abs(n)===1?'':'s'}`};
@@ -32,9 +34,8 @@ const hasValue=s=>{const v=s?.value;if(Array.isArray(v))return v.length>0;if(v&&
 const fmtUpdated=iso=>{const d=new Date(iso);return Number.isNaN(d.getTime())?'':new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',year:'numeric'}).format(d)};
 
 async function load(){
-  const d=await chrome.storage.local.get([STORAGE_KEY,RECORDINGS_KEY]);
-  settings={...DEFAULTS,...(d[STORAGE_KEY]||{})};
-  recordings=d[RECORDINGS_KEY]||{};
+  settings={...DEFAULTS,...await getSettings()};
+  recordings=await getRecordings();
   const params=new URLSearchParams(location.search);
   selectedId=params.get('recording')||Object.keys(recordings)[0]||null;
   activeSection=params.get('section')==='settings'?'settings':'recordings';
@@ -70,7 +71,7 @@ function editorField(s,i){
     const vals=valuesArray(v).map(x=>x.toLowerCase());
     return`<div class="multi-options">${opts.map(o=>{const label=o.displayValue||o.value,on=vals.includes(String(o.value).toLowerCase())||vals.includes(String(label).toLowerCase());return`<label><input type="checkbox" data-multi-index="${i}" data-multi-value="${esc(o.value)}" ${on?'checked':''}><span>${esc(label)}</span></label>`}).join('')}</div>`;
   }
-  if(t==='date')return`<input class="edit-control" type="text" data-edit-value="${i}" value="${esc(dateFieldDisplay(s))}" placeholder="Today, Today + 3 days, Today - 2 days">`;
+  if(t==='date'){const m=s?.meta||{};if(m.dateMode==='relative'&&Number.isFinite(Number(m.dateOffsetDays))){const off=Number(m.dateOffsetDays);const sign=off<0?'-':'+';return`<div class="relative-date-editor"><span class="relative-date-fixed">Today</span><select class="editor-select relative-date-sign" data-date-sign="${i}" aria-label="Relative date direction"><option value="+" ${sign==='+'?'selected':''}>+</option><option value="-" ${sign==='-'?'selected':''}>-</option></select><input class="edit-control relative-date-number" type="number" min="0" step="1" data-date-offset="${i}" value="${Math.abs(off)}" aria-label="Number of days"><span class="relative-date-fixed">days</span></div>`;}const exact=String(s.value||'').slice(0,10);return`<input class="edit-control" type="date" data-edit-value="${i}" value="${esc(exact)}">`; }
   return`<input class="edit-control" type="text" data-edit-value="${i}" value="${esc(display(v))}" placeholder="Recorded value">`;
 }
 
@@ -80,10 +81,10 @@ function render(){
     <div class="page-head">
       <div class="brandhead"><img class="mark" src="branding/forcepilot-icon.png" alt=""><img class="word" src="branding/forcepilot-wordmark.png" alt="ForcePilot"></div>
       <div class="toolbar">
-        <button class="secondary" id="import">Import</button>
+        <button class="secondary button-with-icon" id="import">${icon('fileDownload')}<span>Import</span></button>
         <input id="importFile" type="file" accept="application/json,.json" hidden>
-        <button class="secondary" id="export">Export</button>
-        <details class="more-menu"><summary class="secondary more-trigger" aria-label="More actions">⋮</summary><div class="more-popover"><button id="deleteAll">Delete all recordings</button></div></details>
+        <button class="secondary button-with-icon" id="export">${icon('fileUpload')}<span>Export</span></button>
+        <details class="more-menu"><summary class="secondary more-trigger" aria-label="More actions">${icon('more')}</summary><div class="more-popover"><button class="more-danger button-with-icon" id="deleteAll">${icon('delete')}<span>Delete all recordings</span></button></div></details>
       </div>
     </div>
     <div class="page-title-row"><div><h1>Recordings &amp; Autofill</h1><p>Manage saved Salesforce field recordings and autofill behavior.</p></div></div>
@@ -91,6 +92,7 @@ function render(){
       <button class="tab ${activeSection==='recordings'?'active':''}" data-section="recordings">Recordings</button>
       <button class="tab ${activeSection==='settings'?'active':''}" data-section="settings">Settings</button>
     </nav>
+    ${pendingConfirmation?`<div class="confirm-overlay" id="confirmOverlay" role="presentation"><div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmMessage"><div class="confirm-dialog-icon">${icon('warning')}</div><div class="confirm-dialog-body"><h2 id="confirmTitle">${esc(pendingConfirmation.title||'Confirm action')}</h2><p id="confirmMessage">${esc(pendingConfirmation.message)}</p></div><div class="confirm-dialog-actions"><button class="secondary" id="confirmCancel">Cancel</button><button class="primary confirm-danger" id="confirmProceed">${esc(pendingConfirmation.confirmLabel||'Confirm')}</button></div></div></div>`:''}
     ${activeSection==='recordings'?renderRecordings(rows,r):renderSettings()}`;
   bind();
 }
@@ -99,7 +101,7 @@ function renderRecordings(rows,r){
   return`<div class="manager">
     <section class="panel recording-panel">
       <div class="section-title-row"><div><h2>Saved recordings</h2><span>${rows.length} saved</span></div></div>
-      ${rows.length?`<input class="search" id="search" value="${esc(recordingSearch)}" placeholder="Search recordings…" aria-label="Search recordings"><div class="recording-list">${rows.map(x=>`<button class="listitem ${x.id===selectedId?'active':''}" data-id="${esc(x.id)}"><span class="grow"><strong>${esc(x.name)}</strong><small>${x.steps.length} field${x.steps.length===1?'':'s'}</small></span><span class="chevron">›</span></button>`).join('')}</div>`:`<div class="empty-state"><strong>No recordings yet</strong><span>Record a Salesforce form and it will appear here.</span></div>`}
+      ${Object.keys(recordings).length?`<input class="search" id="search" value="${esc(recordingSearch)}" placeholder="Search recordings…" aria-label="Search recordings">${rows.length?`<div class="recording-list">${rows.map(x=>`<button class="listitem ${x.id===selectedId?'active':''}" data-id="${esc(x.id)}"><span class="grow"><strong>${esc(x.name)}</strong><small>${x.steps.length} field${x.steps.length===1?'':'s'}</small></span>${icon('chevron')}</button>`).join('')}</div>`:`<div class="empty-state"><strong>No recordings match</strong><span>Try a different search term.</span></div>`}`:`<div class="empty-state"><strong>No recordings yet</strong><span>Record a Salesforce form and it will appear here.</span></div>`}
     </section>
     <section class="panel editor-panel">${r?renderEditor(r):'<div class="empty-editor"><strong>Select a recording</strong><span>Choose a recording to review or edit it.</span></div>'}</section>
   </div>`;
@@ -107,7 +109,7 @@ function renderRecordings(rows,r){
 
 function renderSettings(){
   return`<section class="panel settings-panel settings-page">
-    <div class="section-title-row"><div><h2>Autofill settings</h2><span>Defaults used when Autofill runs.</span></div><button class="secondary compact" id="reset">Reset defaults</button></div>
+    <div class="section-title-row"><div><h2>Autofill settings</h2></div><button class="secondary compact button-with-icon" id="reset">${icon('refresh')}<span>Reset defaults</span></button></div>
     <div class="setting-group"><h3>Autofill behavior</h3>${setting('fillEmptyOnly','Fill empty fields only',"Existing Salesforce values won't be changed.")}${setting('verifyAfterReplay','Verify filled values','Check Salesforce after each field is filled.')}${setting('stopOnFailure','Stop on first failure','Stop the run when a field cannot be filled.')}</div>
     <div class="setting-group"><h3>Salesforce integration</h3>${setting('showOverlay','Show ForcePilot on Salesforce','Keep the ForcePilot launcher available on Salesforce pages.')}</div><div class="setting-group"><h3>Date recording</h3>${setting('dateRelativeToToday','Save recorded dates relative to today','When enabled, dates are stored as Today ± days. When disabled, the actual recorded date is stored.')}</div>
   </section>`;
@@ -122,56 +124,73 @@ function renderEditor(r){
   const updated=fmtUpdated(x.updatedAt);
   return`<div class="editor-shell">
     <div class="editor-head">
-      <div class="editor-heading">
+      <div class="editor-heading${editing?' is-editing':''}">
         <div class="breadcrumb">Recordings / Saved recording</div>
-        <h2>${esc(x.name)}</h2>
+        ${editing?`<input class="editor-name-input" id="name" value="${esc(x.name)}" aria-label="Recording name" maxlength="200">`:`<h2>${esc(x.name)}</h2>`}
         <div class="editor-summary"><span>${x.steps.length} field${x.steps.length===1?'':'s'}</span>${x.context?.objectLabel?`<span>${esc(x.context.objectLabel)}</span>`:''}</div>
+        
       </div>
-      ${!editing?'<button class="primary" id="edit">Edit recording</button>':''}
+      ${!editing?`<button class="primary button-with-icon" id="edit">${icon('edit')}<span>Edit recording</span></button>`:''}
     </div>
-    ${editing?`<div class="name-editor"><label>Recording name<input class="input" id="name" value="${esc(x.name)}"></label><span class="edit-help">Change recorded values or disable fields you don't want to use.</span></div>`:''}
     <div class="recording-tools">
       <div class="field-count"><strong>${x.steps.length} fields</strong>${blank ? `<span>${blank} blank</span>` : ''}</div>
       <input class="search field-search" id="fieldSearch" value="${esc(fieldSearch)}" placeholder="Search fields…" aria-label="Search fields">
     </div>
-    <div class="field-table" role="table" aria-label="Recorded fields">
+    <div class="field-table ${editing?'is-editing':''}" role="table" aria-label="Recorded fields">
       <div class="field-table-head" role="row"><span>#</span><span>Field</span><span>Value</span><span>Type</span>${editing?'<span aria-hidden="true"></span>':''}</div>
       <div class="editor-list">${visible.length?visible.map(({s,i})=>renderFieldRow(s,i)).join(''):`<div class="no-fields">No fields match “${esc(fieldSearch)}”.</div>`}</div>
     </div>
-    ${editing?'<div class="actions editor-actions"><button class="secondary" id="cancelEdit">Cancel</button><button class="primary" id="saveEdit">Save changes</button></div>':'<div class="actions"><button class="secondary delete-one" id="deleteOne">Delete recording</button></div>'}
+    ${editing?`<div class="actions editor-actions"><button class="secondary button-with-icon" id="cancelEdit">${icon('close')}<span>Cancel</span></button><button class="primary button-with-icon" id="saveEdit">${icon('save')}<span>Save changes</span></button></div>`:`<div class="actions"><button class="secondary delete-one button-with-icon" id="deleteOne">${icon('delete')}<span>Delete recording</span></button></div>`}
   </div>`;
 }
 
 function renderFieldRow(s,i){
   const t=normalizeType(s);
-  return`<div class="editor-row" role="row">
+  const locateAttrs=editing?'':' data-focus-step="'+i+'" tabindex="0" title="Locate field in Salesforce"';
+  return`<div class="editor-row ${editing?'is-editing':'locatable'}" role="row"${locateAttrs}>
     <span class="step-number">${i+1}</span>
-    <div class="field-main"><strong>${esc(s.target.label)}</strong><span class="api">${esc(s.target.apiName||s.target.key||'')}</span></div>
+    <div class="field-main"><strong>${esc(s.target.label)}</strong><span class="api">${esc(apiDisplayName(s))}</span></div>
     <div class="field-value">${editing?editorField(s,i):`<span class="value-text">${esc((t==='date'?dateFieldDisplay(s):display(s.value))||'—')}</span>`}</div>
     <div class="field-type"><span class="typepill">${typeLabel(s)}</span></div>
-    ${editing?`<div class="row-tools"><label class="use-check" title="Use in Autofill"><input class="check" type="checkbox" data-enabled="${i}" ${s.enabled!==false?'checked':''}></label><button class="icon-delete" data-remove="${i}" title="Remove field" aria-label="Remove field"><svg viewBox="0 0 20 20"><path d="M7 3h6l1 2h3v2H3V5h3l1-2Zm-2 5h10l-.7 9H5.7L5 8Zm3 2v5h1v-5H8Zm3 0v5h1v-5h-1Z"/></svg></button></div>`:''}
+    ${editing?`<div class="row-tools"><label class="use-check" title="Use in Autofill"><input class="check" type="checkbox" data-enabled="${i}" ${s.enabled!==false?'checked':''}></label><button class="icon-delete" data-remove="${i}" title="Remove field" aria-label="Remove field">${icon('delete')}</button></div>`:''}
   </div>`;
 }
 
 function bind(){
-  document.querySelectorAll('.listitem[data-id]').forEach(b=>b.addEventListener('click',()=>{if(!leaveEdit())return;selectedId=b.dataset.id;editing=false;draft=snapshot=null;recordingSearch='';fieldSearch='';render()}));
-  document.querySelectorAll('[data-section]').forEach(b=>b.addEventListener('click',()=>{if(!leaveEdit())return;activeSection=b.dataset.section;editing=false;draft=snapshot=null;recordingSearch='';fieldSearch='';const u=new URL(location.href);u.searchParams.set('section',activeSection);if(selectedId)u.searchParams.set('recording',selectedId);history.replaceState({},'',u);render()}));
+  document.querySelectorAll('.listitem[data-id]').forEach(b=>b.addEventListener('click',()=>requestDiscardAnd(()=>{selectedId=b.dataset.id;editing=false;draft=snapshot=null;recordingSearch='';fieldSearch='';render()})));
+  document.querySelectorAll('[data-section]').forEach(b=>b.addEventListener('click',()=>requestDiscardAnd(()=>{activeSection=b.dataset.section;editing=false;draft=snapshot=null;recordingSearch='';fieldSearch='';const u=new URL(location.href);u.searchParams.set('section',activeSection);if(selectedId)u.searchParams.set('recording',selectedId);history.replaceState({},'',u);render()})));
   document.getElementById('search')?.addEventListener('input',e=>{recordingSearch=e.target.value;clearTimeout(window.fpSearchTimer);window.fpSearchTimer=setTimeout(()=>{const pos=recordingSearch.length;render();const el=document.getElementById('search');if(el){el.focus();el.setSelectionRange(pos,pos)}},100)});
   document.getElementById('fieldSearch')?.addEventListener('input',e=>{fieldSearch=e.target.value;render();const el=document.getElementById('fieldSearch');if(el){el.focus();el.setSelectionRange(fieldSearch.length,fieldSearch.length)}});
-  document.querySelectorAll('[data-setting]').forEach(el=>el.addEventListener('change',async e=>{settings={...settings,[e.target.dataset.setting]:e.target.checked};await chrome.storage.local.set({[STORAGE_KEY]:settings})}));
-  document.getElementById('reset')?.addEventListener('click',async()=>{if(!confirm('Reset settings to the defaults?'))return;settings={...DEFAULTS};await chrome.storage.local.set({[STORAGE_KEY]:settings});render()});
+  document.querySelectorAll('[data-setting]').forEach(el=>el.addEventListener('change',async e=>{settings={...settings,[e.target.dataset.setting]:e.target.checked};await saveSettings(settings)}));
+  document.getElementById('reset')?.addEventListener('click',()=>requestConfirmation('Reset settings','Reset all Autofill settings to their defaults?','Reset',async()=>{settings={...DEFAULTS};await saveSettings(settings);show('Settings reset')}));
   document.getElementById('edit')?.addEventListener('click',async()=>{draft=clone(recordings[selectedId]);snapshot=clone(draft);editing=true;render();await hydrateDraftPicklists(draft);render()});
-  document.getElementById('cancelEdit')?.addEventListener('click',()=>{editing=false;draft=snapshot=null;render()});
+  document.getElementById('cancelEdit')?.addEventListener('click',()=>requestDiscardAnd(()=>{editing=false;draft=snapshot=null;render()}));
   document.getElementById('saveEdit')?.addEventListener('click',saveEdit);
   document.getElementById('deleteOne')?.addEventListener('click',deleteOne);
   document.getElementById('deleteAll')?.addEventListener('click',deleteAll);
+  document.getElementById('confirmCancel')?.addEventListener('click',()=>{pendingConfirmation=null;render()});
+  document.getElementById('confirmOverlay')?.addEventListener('click',e=>{if(e.target.id==='confirmOverlay'){pendingConfirmation=null;render()}});
+  document.getElementById('confirmProceed')?.addEventListener('click',async()=>{const fn=pendingConfirmation?.action;pendingConfirmation=null;if(fn)await fn();render()});
+  document.onkeydown=e=>{if(pendingConfirmation&&e.key==='Escape'){pendingConfirmation=null;render()}};
+  document.querySelectorAll('[data-focus-step]').forEach(b=>{const handler=()=>focusSalesforceField(Number(b.dataset.focusStep));b.addEventListener('click',handler);b.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();handler()}})});
   document.querySelectorAll('[data-remove]').forEach(b=>b.addEventListener('click',()=>{draft.steps.splice(Number(b.dataset.remove),1);draft.steps.forEach((s,i)=>s.sequence=i+1);render()}));
   document.getElementById('export')?.addEventListener('click',exportData);
   document.getElementById('import')?.addEventListener('click',()=>document.getElementById('importFile').click());
   document.getElementById('importFile')?.addEventListener('change',importData);
 }
 
-function leaveEdit(){return!editing||JSON.stringify(draft)===JSON.stringify(snapshot)||confirm('Discard unsaved changes?')}
+async function focusSalesforceField(index){
+  const r=selectedId?recordings[selectedId]:null;
+  const step=r?.steps?.[Number(index)];
+  if(!step)return;
+  const tabs=await chrome.tabs.query({active:true,currentWindow:true}).catch(()=>[]);
+  const tab=tabs?.[0];
+  if(!tab?.id)return;
+  await chrome.tabs.sendMessage(tab.id,{type:'FOCUS_FIELD',target:step.target}).catch(()=>null);
+}
+
+function requestConfirmation(title,message,confirmLabel,action){pendingConfirmation={title,message,confirmLabel,action};render()}
+function requestDiscardAnd(action){if(!editing||JSON.stringify(draft)===JSON.stringify(snapshot)){action();return;}requestConfirmation('Discard changes','You have unsaved changes to this recording. Discard them?','Discard',async()=>{editing=false;draft=snapshot=null;await action()})}
 
 async function saveEdit(){
   if(!draft)return;
@@ -182,49 +201,40 @@ async function saveEdit(){
     else if(normalizeType(s)==='multipicklist'&&optionList(s).length)s.value=[...document.querySelectorAll(`[data-multi-index="${i}"]:checked`)].map(x=>x.dataset.multiValue).filter(Boolean);
     else if(v){
       if(normalizeType(s)==='date'){
-        const input=String(v.value||'').trim();
         const recordingDate=s.meta?.dateRecordedOn||draft.recordingDate||localDateISO();
-        const relativeOffset=parseRelativeDate(input);
-        const relativeMode=settings.dateRelativeToToday!==false;
-        if(relativeMode){
-          if(relativeOffset!==null){
-            s.value=shiftDateFrom(recordingDate,relativeOffset);
-            s.meta={...(s.meta||{}),dateRecordedOn:recordingDate,dateOffsetDays:relativeOffset,dateExpression:dateOffsetLabel(relativeOffset),dateMode:'relative'};
-          }else{
-            const m=input.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/);
-            const normalized=m?`${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`:input;
-            const offset=dateOffsetDays(recordingDate,normalized);
-            if(offset!==null&&/^\d{4}-\d{2}-\d{2}$/.test(normalized)){s.value=normalized;s.meta={...(s.meta||{}),dateRecordedOn:recordingDate,dateOffsetDays:offset,dateExpression:dateOffsetLabel(offset),dateMode:'relative'};}
-            else{s.value=input;}
-          }
+        if(s.meta?.dateMode==='relative'&&Number.isFinite(Number(s.meta?.dateOffsetDays))){
+          const sign=document.querySelector(`[data-date-sign="${i}"]`)?.value==='-'?-1:1;
+          const days=Math.max(0,Number(document.querySelector(`[data-date-offset="${i}"]`)?.value||0));
+          const relativeOffset=sign*days;
+          s.value=shiftDateFrom(recordingDate,relativeOffset);
+          s.meta={...(s.meta||{}),dateRecordedOn:recordingDate,dateOffsetDays:relativeOffset,dateExpression:dateOffsetLabel(relativeOffset),dateMode:'relative'};
         }else{
-          let normalized=input;
-          const m=input.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/);
-          if(m)normalized=`${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
-          if(relativeOffset!==null)normalized=shiftDateFrom(recordingDate,relativeOffset);
+          const input=String(v.value||'').trim();
+          const normalized=input.replace(/^([\d]{1,2})[\/.\-]([\d]{1,2})[\/.\-]([\d]{4})$/,(mm,month,day,year)=>`${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`);
           s.value=normalized;
           if(s.meta){delete s.meta.dateExpression;delete s.meta.dateOffsetDays;delete s.meta.dateMode;}
         }
       }else s.value=cleanEditedValue(s,v.value);
     }
-    s.enabled=document.querySelector(`[data-enabled="${i}"]`)?.checked!==false;
+    const enabled=document.querySelector(`[data-enabled="${i}"]`);
+    if(enabled)s.enabled=enabled.checked;
     s.sequence=i+1;
   });
   draft.updatedAt=new Date().toISOString();
   recordings[draft.id]=clone(draft);
-  await chrome.storage.local.set({[RECORDINGS_KEY]:recordings});
+  await saveRecordings(recordings);
   editing=false;draft=snapshot=null;render();show('Recording saved');
 }
 
-async function deleteOne(){const r=recordings[selectedId];if(!r||!confirm(`Delete “${r.name}”?`))return;delete recordings[selectedId];selectedId=Object.keys(recordings)[0]||null;editing=false;draft=snapshot=null;recordingSearch='';fieldSearch='';await chrome.storage.local.set({[RECORDINGS_KEY]:recordings});render();show('Recording deleted')}
-async function deleteAll(){if(!Object.keys(recordings).length)return;if(!confirm('Delete all recordings?'))return;recordings={};selectedId=null;editing=false;draft=snapshot=null;recordingSearch='';fieldSearch='';await chrome.storage.local.set({[RECORDINGS_KEY]:{}});render();show('All recordings deleted')}
-function exportData(){const blob=new Blob([JSON.stringify({schemaVersion:4,exportedAt:new Date().toISOString(),recordings,settings},null,2)],{type:'application/json'}),u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download='forcepilot-recordings.json';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)}
+async function deleteOne(){const r=recordings[selectedId];if(!r)return;requestConfirmation('Delete recording',`Delete “${r.name}”? This cannot be undone.`,'Delete',async()=>{delete recordings[selectedId];selectedId=Object.keys(recordings)[0]||null;editing=false;draft=snapshot=null;recordingSearch='';fieldSearch='';await saveRecordings(recordings);show('Recording deleted')})}
+async function deleteAll(){if(!Object.keys(recordings).length)return;requestConfirmation('Delete all recordings','Delete all saved recordings? This cannot be undone.','Delete all',async()=>{recordings={};selectedId=null;editing=false;draft=snapshot=null;recordingSearch='';fieldSearch='';await saveRecordings({});show('All recordings deleted')})}
+function exportData(){const blob=new Blob([JSON.stringify({schemaVersion:SCHEMA_VERSION,exportedAt:new Date().toISOString(),recordings,settings},null,2)],{type:'application/json'}),u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download='forcepilot-recordings.json';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)}
 async function importData(e){
   try{
-    const file=e.target.files?.[0];if(!file)return;if(file.size>5*1024*1024)throw Error('Recording file is too large.');
+    const file=e.target.files?.[0];if(!file)return;if(file.size>50*1024*1024)throw Error('Recording file is too large.');
     const d=JSON.parse(await file.text());
     if(!d||typeof d!=='object'||!d.recordings||typeof d.recordings!=='object'||Array.isArray(d.recordings))throw Error('Invalid recording file.');
-    const incoming=Object.values(d.recordings);if(incoming.length>1000)throw Error('Too many recordings in this file.');
+    const incoming=Object.values(normalizeStoredRecordings(d.recordings).recordings);if(incoming.length>1000)throw Error('Too many recordings in this file.');
     const allowedActions=new Set(['set-value','set-boolean','select-option','set-multi-option','select-lookup','set-address']);const accepted=[];
     for(const r of incoming){
       if(!r||typeof r!=='object'||typeof r.id!=='string'||!/^[A-Za-z0-9_-]{8,120}$/.test(r.id)||!Array.isArray(r.steps)||r.steps.length>500)continue;
@@ -235,8 +245,7 @@ async function importData(e){
     if(!accepted.length)throw Error('No valid recordings were found.');
     for(const r of accepted)recordings[r.id]=r;
     if(d.settings&&typeof d.settings==='object')settings={...settings,...Object.fromEntries(Object.entries(d.settings).filter(([k,v])=>k in DEFAULTS&&typeof v==='boolean'))};
-    const bytes=new TextEncoder().encode(JSON.stringify(recordings)).byteLength;if(bytes>5*1024*1024)throw Error('Saved recordings are too large. Remove some recordings and try again.');
-    await chrome.storage.local.set({[RECORDINGS_KEY]:recordings,[STORAGE_KEY]:settings});render();show(`Imported ${accepted.length} recording${accepted.length===1?'':'s'}.`);
+    recordings=normalizeStoredRecordings(recordings).recordings; await saveRecordings(recordings); await saveSettings(settings);render();show(`Imported ${accepted.length} recording${accepted.length===1?'':'s'}.`);
   }catch(err){show(err.message||'Import failed.',true)}finally{e.target.value=''}
 }
 function show(m,error=false){const el=document.getElementById('message');if(!el)return;el.textContent=m;el.className='message show'+(error?' error':'');clearTimeout(show.t);show.t=setTimeout(()=>el.className='message',2200)}

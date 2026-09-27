@@ -1,17 +1,15 @@
 <div align="center">
 
-<nobr>
-<img src="branding/forcepilot-icon.png" alt="ForcePilot Logo" width="90">
-<img src="branding/forcepilot-wordmark.png" alt="ForcePilot" width="260">
-</nobr>
+# ForcePilot
 
 **Record Salesforce field data once. Reuse it everywhere.**
 
-A Chrome and Microsoft Edge extension that captures field changes on a Salesforce Lightning record and autofills them back on any other record of the same type — built for QA, testing, and anyone tired of re-typing the same setup data.
+A Chrome and Microsoft Edge extension that captures field changes on a Salesforce Lightning record and autofills them back onto comparable records of the same Salesforce object — built for QA, testing, troubleshooting, and anyone tired of re-entering the same setup data.
 
 <nobr>
 <img src="https://img.shields.io/badge/Manifest-V3-4A90D9" alt="Manifest V3">
 <img src="https://img.shields.io/badge/Platform-Chrome%20%7C%20Edge-4285F4" alt="Platform">
+<img src="https://img.shields.io/badge/Version-1.5-1976D2" alt="Version 1.5">
 <img src="https://img.shields.io/badge/License-MIT-lightgrey" alt="License">
 </nobr>
 
@@ -19,65 +17,85 @@ A Chrome and Microsoft Edge extension that captures field changes on a Salesforc
 
 ---
 
-## Why ForcePilot
+## What ForcePilot does
 
-Setting up test data in Salesforce usually means the same tedious loop: open a record, fill in the same 10–20 fields, save, repeat on the next record.
+ForcePilot records Salesforce field changes once, stores the field identity and value metadata, and lets you reuse that setup later through the Side Panel or Options page.
 
-ForcePilot breaks that loop.
+The replay engine is designed around Salesforce Lightning controls rather than generic browser automation. It handles standard text/number/date fields, checkboxes, picklists, multi-select picklists, addresses, and relative dates.
 
-Record the fields once, give the recording a name, and run it on any comparable record afterward. It handles field matching, relative dates, empty-field-only fills, and retries on failure — so the same setup that took five minutes the first time can take seconds the next.
+## 1.5 highlights
 
-## How it works
+- Reliable Salesforce field identity and object-aware replay.
+- Record-type-aware picklist metadata and stronger picklist verification.
+- Multi-select picklist support with improved verification, including all-selected states.
+- Recording cleanup so click-only or empty field interactions are not saved.
+- `false` checkbox handling and `0` / `0.00` **Fill empty fields only** semantics.
+- Material-inspired UI across Side Panel, Popup, and Options using local SVG icons.
+- Compact Saved Recordings and Autofill Results screens.
+- In-page ForcePilot confirmation dialogs instead of browser-native confirmations.
+- Salesforce field highlighting with a 2px blue border and subtle 2px blue focus ring.
+- Faster reuse of skipped recorded values while preserving the normal autofill execution path.
+- Import/export, retry failed fields, relative dates, recording editing, and organization workflows preserved.
+
+## Core workflow
 
 ```text
-Open record → Start recording → Change fields → Save
-                                                   ↓
-                       Open another record → Run recording → Review results
+Open Salesforce record
+        ↓
+Start recording
+        ↓
+Change fields / select values
+        ↓
+Stop and save the recording
+        ↓
+Open another compatible record
+        ↓
+Run the recording
+        ↓
+Review Autofill Results
 ```
-
-ForcePilot stores each recording along with metadata about the Salesforce fields it captured, including API names, labels, and field types. This allows it to reliably locate matching fields the next time you use the recording, even on a different record.
-
-## Features
-
-| Feature | Description |
-|---|---|
-| **Record & replay** | Capture field changes while working normally in Salesforce; save and reuse them as a named recording |
-| **Smart autofill** | Fill empty fields only, or overwrite existing values — your choice per run |
-| **Relative dates** | Store dates such as `Today + 7 days` instead of a fixed date so recordings don't become stale |
-| **Retry on failure** | Re-run only the fields that failed instead of repeating the entire recording |
-| **Import / export** | Move recordings between machines or browser profiles as JSON |
-| **Recording management** | Rename recordings, edit fields, enable or disable individual fields, or add new fields |
-| **Side panel workflow** | Record, browse, and run recordings without leaving the Salesforce tab |
 
 ## Supported field types
 
 Text · Textarea · Number · Currency · Percent · Checkbox · Date · Date/Time · Time · Picklist · Multi-select picklist · Address
 
-Support may vary on heavily customized Lightning components or managed-package components.
+Support can vary on heavily customized Lightning components or managed-package components.
+
+## Main features
+
+| Feature | Description |
+|---|---|
+| **Record & replay** | Capture field changes and save them as named recordings. |
+| **Smart Autofill** | Fill empty fields only or overwrite existing values. |
+| **Relative dates** | Store values such as `Today + 7 days` instead of a fixed date. |
+| **Picklists** | Resolve canonical Salesforce values and display labels. |
+| **Multi-select picklists** | Select and verify multiple values through Salesforce dual-listboxes. |
+| **Retry** | Retry only failed fields from an Autofill run. |
+| **Import / export** | Move recordings between browser profiles as JSON. |
+| **Recording editor** | Rename recordings, edit values, enable/disable fields, and remove fields. |
+| **Side Panel** | Record, browse, focus, and run recordings without leaving Salesforce. |
 
 ## Installation
 
-ForcePilot currently runs as an unpacked browser extension.
+ForcePilot is distributed as an unpacked Manifest V3 extension.
 
 ### Chrome
 
-1. Download or clone this repository.
-2. Extract the repository if downloaded as a ZIP.
-3. Open `chrome://extensions` in Chrome.
-4. Turn on **Developer mode**.
-5. Click **Load unpacked**.
-6. Select the ForcePilot folder containing `manifest.json`.
-7. Open Salesforce and launch ForcePilot from the extension icon or Salesforce launcher.
+1. Clone or download this repository.
+2. Open `chrome://extensions`.
+3. Turn on **Developer mode**.
+4. Click **Load unpacked**.
+5. Select the ForcePilot folder containing `manifest.json`.
+6. Open Salesforce and launch ForcePilot from the extension icon or Salesforce launcher.
 
 ### Microsoft Edge
 
-1. Download or clone this repository.
-2. Extract the repository if downloaded as a ZIP.
-3. Open `edge://extensions` in Edge.
-4. Turn on **Developer mode**.
-5. Click **Load unpacked**.
-6. Select the ForcePilot folder containing `manifest.json`.
-7. Open Salesforce and launch ForcePilot from the extension icon or Salesforce launcher.
+1. Clone or download this repository.
+2. Open `edge://extensions`.
+3. Turn on **Developer mode**.
+4. Click **Load unpacked**.
+5. Select the ForcePilot folder containing `manifest.json`.
+6. Open Salesforce and launch ForcePilot.
 
 ### Supported Salesforce domains
 
@@ -91,22 +109,13 @@ ForcePilot currently runs as an unpacked browser extension.
 
 ## Settings
 
-ForcePilot provides configuration options for:
+ForcePilot includes controls for:
 
-- **Fill empty fields only**
-- **Verify values after autofill**
-- **Stop on first failure**
-- **Show or hide the ForcePilot launcher in Salesforce**
-- **Relative date behavior**
-
-## Use cases
-
-ForcePilot is designed for workflows such as:
-
-- Salesforce regression testing
-- Repeated QA scenarios
-- Troubleshooting and reproduction
-- Repeating the same record configuration across multiple records
+- Fill empty fields only
+- Verify values after autofill
+- Stop on first failure
+- Show/hide the Salesforce launcher
+- Relative date behavior
 
 ## Project structure
 
@@ -126,6 +135,7 @@ ForcePilot/
 ├── page_bridge.js
 ├── src/
 │   ├── content.js
+│   ├── material-icons.js
 │   ├── shared.js
 │   └── shared-module.js
 ├── icons/
@@ -134,74 +144,42 @@ ForcePilot/
 
 ## Development
 
-ForcePilot is a Manifest V3 browser extension with no build step. The source can be edited and loaded directly into Chrome or Microsoft Edge.
+ForcePilot has no build step. The source can be loaded directly into Chrome or Microsoft Edge as an unpacked extension.
 
-After making changes:
+After a code change:
 
-1. Save your edits.
-2. Open `chrome://extensions` or `edge://extensions`.
-3. Click **Reload** on ForcePilot.
-4. Refresh the open Salesforce tab.
-5. Test the changed functionality.
-
-## Built with AI
-
-ForcePilot was **vibe-coded with ChatGPT** 🤖
-
-Built iteratively through prompts, debugging, testing, and real-world Salesforce QA use.
+1. Save the files.
+2. Reload ForcePilot from the browser extension page.
+3. Refresh the Salesforce tab.
+4. Test the affected recording/autofill path.
 
 ## Privacy & data
 
-ForcePilot does not require a ForcePilot account or separate Salesforce credentials. It operates using your existing Salesforce browser session.
+ForcePilot does not require a separate ForcePilot account or Salesforce credentials. It uses the Salesforce session already authenticated in the browser.
 
-Recordings and settings are stored in the browser's local extension storage.
+Recordings and settings are stored in the browser's extension storage. Exported recordings can contain values entered into Salesforce, so treat them as potentially sensitive.
 
-A recording may contain real values entered into Salesforce. Treat exported recordings as potentially sensitive and avoid sharing recordings that contain:
+Do not commit customer data, credentials, access tokens, session tokens, or other confidential Salesforce information to this repository.
 
-- Customer data
-- Production data
-- Credentials
-- Tokens
-- Other confidential Salesforce information
+## Reporting issues
 
-Before sharing screenshots, logs, or exported recordings publicly, remove any customer or confidential information.
+When opening an issue, include the Salesforce object/field type, the action you were trying to perform, what happened, your browser version, and any relevant console error that can be shared safely.
 
-## Security
-
-ForcePilot is intended to operate within the Salesforce session already authenticated in your browser.
-
-Report suspected security issues responsibly rather than posting sensitive details publicly in a GitHub Issue.
-
-## Reporting an issue
-
-Open a GitHub Issue with as much of the following information as you can safely share:
-
-- Salesforce object and field type
-- What you were trying to do
-- What happened instead
-- Chrome or Microsoft Edge version
-- ForcePilot version
-- Relevant console errors, if available
-
-Please remove all customer, production, credential, or other confidential Salesforce information from screenshots and logs before posting.
+Remove customer, production, credential, and other confidential Salesforce information before posting screenshots or logs.
 
 ## Contributing
 
-Bug reports and feature suggestions are welcome through GitHub Issues.
-
-Pull requests are welcome. For larger changes, please open an issue first so the proposed approach can be discussed.
+Bug reports, feature ideas, and pull requests are welcome through GitHub Issues and Pull Requests.
 
 ## Versioning
 
-ForcePilot versions are tracked using the version defined in `manifest.json`.
-
-Released versions may be published through GitHub Releases as the project evolves.
+The published extension version is defined by `manifest.json`. This repository is prepared as the **1.5 consolidated release**, with the historical 1.3 baseline retained in `CHANGELOG.md`.
 
 ## License
 
 ForcePilot is licensed under the **MIT License**.
 
-See the [`LICENSE`](LICENSE) file for the full license text.
+See [`LICENSE`](LICENSE) for the full license text.
 
 ---
 

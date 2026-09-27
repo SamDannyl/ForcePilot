@@ -1,20 +1,15 @@
-/*
- * ForcePilot - Salesforce Record Autofill
- * Copyright © 2026 Sam Daniel
- *
- * Licensed under the MIT License. See LICENSE for details.
- * Not affiliated with Salesforce, Inc.
- */
+/* ForcePilot popup — shared Material icon primitives. */
+import { icon } from './src/material-icons.js';
 
 (async()=>{
   const $=s=>document.querySelector(s);
-  const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
   const STORAGE='forcepilot.recordings.v1';
+  document.querySelectorAll('[data-icon]').forEach(el=>{ const name=el.dataset.icon; el.replaceWith(document.createRange().createContextualFragment(icon(name))); });
   const tabs=await chrome.tabs.query({active:true,currentWindow:true});
   const tab=tabs[0];
   let isSalesforce=false;
   try{const u=new URL(tab?.url||'');const hosts=['salesforce.com','lightning.force.com','my.salesforce.com','visualforce.com','vf.force.com'];isSalesforce=u.protocol==='https:'&&hosts.some(s=>u.hostname===s||u.hostname.endsWith('.'+s));}catch{}
-  const data=await chrome.storage.local.get([STORAGE]);
+  await chrome.storage.local.get([STORAGE]);
   if(isSalesforce){
     $('#status').textContent='Salesforce';
     $('#connectionTitle').textContent='Salesforce';
