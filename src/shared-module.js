@@ -6,16 +6,25 @@
  * Not affiliated with Salesforce, Inc.
  */
 
-export const VERSION='1.5';
+export const VERSION='2.0';
 export const SCHEMA_VERSION=5;
 export const STORAGE_KEY='forcepilot.recordings.v1';
 export const SETTINGS_KEY='forcepilot.settings.v1';
+export const DEFAULT_SETTINGS=Object.freeze({stopOnFailure:false,verifyAfterReplay:true,fillEmptyOnly:true,showOverlay:true,launcherMode:'edge',dateRelativeToToday:true,darkMode:false,skipTestCaseReview:true,exportImageQuality:88});
 export const normalizeText=v=>String(v??'').replace(/\s+/g,' ').trim();
+export const escapeHtml=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 export const normalizeLabel=v=>normalizeText(v).toLowerCase().replace(/[\u200b\u00a0]/g,' ');
 export const normalizeNumber=v=>{if(v===null||v===undefined)return '';const raw=String(v).trim();if(!raw)return '';const negative=/^\s*\(.*\)\s*$/.test(raw)||/^\s*-/.test(raw)||/^\s*−/.test(raw);const cleaned=raw.replace(/,/g,'').replace(/−/g,'-');const m=cleaned.match(/(?:\d+(?:\.\d+)?|\.\d+)/);if(!m)return '';const n=Number(m[0]);if(!Number.isFinite(n))return '';const out=Number.isInteger(n)?String(Math.trunc(n)):String(n);return negative&&n!==0?`-${out}`:out};
 export const normalizeBoolean=v=>typeof v==='boolean'?v:['true','1','yes','y','on','checked'].includes(String(v).trim().toLowerCase());
 export const normalizeDate=v=>{const s=String(v??'').trim();const m=s.match(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/);return m?`${m[3]}-${String(m[1]).padStart(2,'0')}-${String(m[2]).padStart(2,'0')}`:s.slice(0,10)};
-export const makeRecordingName=c=>c?.objectApiName||'Salesforce recording';
+export const makeRecordingName=c=>{
+  const label=normalizeText(c?.objectLabel||c?.objectLabelPlural||'');
+  if(label && !/^salesforce$/i.test(label)) return label.replace(/^\s*[*.•·]+\s*/,'');
+  const api=normalizeText(c?.objectApiName||'');
+  if(!api || /^salesforce$/i.test(api)) return 'Salesforce recording';
+  const objectName=(api.replace(/__c$/i,'').split('__').pop()||api);
+  return objectName.replace(/_/g,' ').replace(/([a-z])([A-Z])/g,'$1 $2').trim() || 'Salesforce recording';
+};
 
 export const parseTargetSelectionName=v=>{const raw=normalizeText(v);if(!raw)return null;const m=raw.match(/^sfdc:RecordField\.([^.]*)\.(.+)$/i);if(!m)return{raw};const objectApiName=normalizeText(m[1]),fieldPath=normalizeText(m[2]);let apiName=fieldPath;if(fieldPath.includes('__r__')){const last=fieldPath.split('__r__').pop();apiName=last||fieldPath}return{raw,objectApiName,fieldPath,apiName}};
 export const chooseStableFieldKey=({objectApiName,apiName,name,label,targetSelectionName,fieldPath}={})=>{const obj=normalizeText(objectApiName);if(targetSelectionName){const p=parseTargetSelectionName(targetSelectionName);if(p?.raw)return`field:${obj||p.objectApiName||''}:${p.fieldPath||p.apiName||normalizeLabel(label)}`;}const a=normalizeText(apiName);if(a&&!/(^|[-_])(?:input|combobox|button|field|textbox)[-_]?[a-z0-9]{8,}$/i.test(a)&&!/^[0-9a-z]{20,}$/i.test(a))return obj?`field:${obj}:${a}`:`api:${a}`;const n=normalizeText(name);if(n&&!/^[0-9a-z]{20,}$/i.test(n))return obj?`field:${obj}:${n}`:`name:${n}`;return obj?`field:${obj}:label:${normalizeLabel(label)}`:`label:${normalizeLabel(label)}`};
@@ -75,10 +84,29 @@ function normalizeRecordedStep(step){
   if((type==='multipicklist'||type==='multi-picklist') && !Array.isArray(out.value))out.value=String(out.value??'').split(/\s*;\s*|\s*,\s*/).map(x=>normalizeText(x)).filter(Boolean);
   return out;
 }
+function humanizeObjectApiName(value){
+  const raw=normalizeText(value);
+  if(!raw || /^salesforce$/i.test(raw)) return '';
+  const unnamespaced=raw.replace(/__c$/i,'').split('__').pop() || raw;
+  return unnamespaced.replace(/_/g,' ').replace(/([a-z])([A-Z])/g,'$1 $2').trim();
+}
+function preferredObjectLabel(recording){
+  const ctx=recording?.context || {};
+  const label=normalizeText(ctx.objectLabel || ctx.objectLabelPlural || '');
+  if(label && !/^salesforce$/i.test(label)) return label.replace(/^\s*[*.•·]+\s*/,'');
+  return humanizeObjectApiName(ctx.objectApiName || recording?.name || '');
+}
 function normalizeStoredRecordingValue(recording){
   const normalized=normalizeRecordingSchema(recording);
   if(!normalized||typeof normalized!=='object'||!Array.isArray(normalized.steps))return normalized;
-  return {...normalized,steps:normalized.steps.map(normalizeRecordedStep)};
+  const next={...normalized,steps:normalized.steps.map(normalizeRecordedStep)};
+  const api=normalizeText(next.context?.objectApiName || '');
+  const label=preferredObjectLabel(next);
+  const currentName=normalizeText(next.name || '');
+  if(label && currentName && api && currentName.toLowerCase()===api.toLowerCase()) next.name=label;
+  else if(label && currentName && /__c$/i.test(currentName) && api && currentName.toLowerCase()===api.toLowerCase()) next.name=label;
+  else if(label && currentName && /^c$/i.test(currentName) && /__c$/i.test(api)) next.name=label;
+  return next;
 }
 export const normalizeStoredRecordings=recordings=>{
   const out={};let changed=false;
@@ -104,5 +132,20 @@ export const getRecordings=async()=>{
 const MAX_RECORDINGS=1000; const MAX_STEPS=500; const MAX_VALUE_CHARS=10000;
 function validRecording(r){return !!r&&typeof r==='object'&&typeof r.id==='string'&&/^[A-Za-z0-9_-]{8,120}$/.test(r.id)&&Array.isArray(r.steps)&&r.steps.length<=MAX_STEPS&&r.steps.every(s=>s&&typeof s==='object'&&typeof s.action==='string'&&typeof s.target==='object'&&s.target&&String(s.target.label||'').length<=500&&JSON.stringify(s.value??'').length<=MAX_VALUE_CHARS)}
 export const saveRecordings=async r=>{if(!r||typeof r!=='object')throw new Error('Invalid recordings');const normalized=normalizeStoredRecordings(r).recordings;const values=Object.values(normalized);if(values.length>MAX_RECORDINGS||!values.every(validRecording))throw new Error('Recording data is too large or invalid.');const raw=JSON.stringify(normalized);await chrome.storage.local.set({[STORAGE_KEY]:normalized});};
-export const getSettings=async()=>{const d=await chrome.storage.local.get([SETTINGS_KEY,'ss_settings_v78','ss_settings_v77']);const raw={...(d.ss_settings_v77||{}),...(d.ss_settings_v78||{}),...(d[SETTINGS_KEY]||{})};return{stopOnFailure:false,verifyAfterReplay:true,fillEmptyOnly:true,showOverlay:true,dateRelativeToToday:true,...Object.fromEntries(['stopOnFailure','verifyAfterReplay','fillEmptyOnly','showOverlay','dateRelativeToToday'].filter(k=>k in raw).map(k=>[k,Boolean(raw[k])]))}};
+export const getSettings=async()=>{
+  const d=await chrome.storage.local.get([SETTINGS_KEY,'ss_settings_v78','ss_settings_v77']);
+  const raw={...(d.ss_settings_v77||{}),...(d.ss_settings_v78||{}),...(d[SETTINGS_KEY]||{})};
+  const boolKeys=['stopOnFailure','verifyAfterReplay','fillEmptyOnly','showOverlay','dateRelativeToToday','darkMode','skipTestCaseReview'];
+  const out={...DEFAULT_SETTINGS};
+  for(const key of boolKeys) if(key in raw) out[key]=Boolean(raw[key]);
+  const legacyMode=String(raw.launcherMode||'');
+  if(legacyMode==='current') out.launcherMode='bubble';
+  else if(['bubble','edge','off'].includes(legacyMode)) out.launcherMode=legacyMode;
+  else if(raw.showOverlay===false) out.launcherMode='off';
+  if('exportImageQuality' in raw){
+    const n=Math.round(Number(raw.exportImageQuality));
+    if(Number.isFinite(n)) out.exportImageQuality=Math.min(95,Math.max(70,n));
+  }
+  return out;
+};
 export const saveSettings=async s=>chrome.storage.local.set({[SETTINGS_KEY]:s});

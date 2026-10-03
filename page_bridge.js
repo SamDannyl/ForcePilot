@@ -12,8 +12,8 @@
   window.__FORCEPILOT_BRIDGE_READY__=true;
   const HOST_RE=/^(?:[^.]+\.)*(?:salesforce\.com|visualforce\.com|vf\.force\.com|lightning\.force\.com|my\.salesforce\.com)$/i;
   if(!HOST_RE.test(location.hostname)) return;
-  const BUILD='1.5';
-  const challenges=new Map();
+  const BUILD='2.0';
+  const capabilityChallenges=new Map();
   const requests=new Set();
   const targetIds=new WeakMap();
   const targetById=new Map();
@@ -504,19 +504,20 @@
     return{ok:false,reason:'Salesforce did not confirm the selected multi-select values'};
   }
 
+  // MAIN-world CustomEvents are observable by page scripts. This short-lived nonce is only a replay guard/capability check, never authentication.
   window.addEventListener('forcepilot-bridge-init',event=>{
     const d=event.detail||{};
     if(d.version!==BUILD||!validRequest(d.requestId)||!validId(d.id)||!['set-pick','set-multi','set-pick-index','set-lookup'].includes(d.action))return;
-    if(typeof d.token!=='string'||d.token.length<16||d.token.length>200)return;
-    challenges.set(d.requestId,{token:d.token,id:d.id,action:d.action,expiresAt:Number(d.expiresAt||Date.now()+2500)});
-    for(const [k,v] of challenges){if(v.expiresAt<Date.now())challenges.delete(k)}
+    if(typeof d.nonce!=='string'||d.nonce.length<16||d.nonce.length>200)return;
+    capabilityChallenges.set(d.requestId,{nonce:d.nonce,id:d.id,action:d.action,expiresAt:Number(d.expiresAt||Date.now()+2500)});
+    for(const [k,v] of capabilityChallenges){if(v.expiresAt<Date.now())capabilityChallenges.delete(k)}
   },{capture:true});
 
   window.addEventListener('forcepilot-page-action',/** @param {CustomEvent<any>} event */async event=>{
     const d=event.detail||{};
-    const challenge=challenges.get(d.requestId);
-    if(!challenge||challenge.expiresAt<Date.now()||challenge.token!==d.token||challenge.id!==d.id||challenge.action!==d.action||d.version!==BUILD||!validRequest(d.requestId)||requests.has(d.requestId)||!validId(d.id))return;
-    challenges.delete(d.requestId);
+    const challenge=capabilityChallenges.get(d.requestId);
+    if(!challenge||challenge.expiresAt<Date.now()||challenge.nonce!==d.nonce||challenge.id!==d.id||challenge.action!==d.action||d.version!==BUILD||!validRequest(d.requestId)||requests.has(d.requestId)||!validId(d.id))return;
+    capabilityChallenges.delete(d.requestId);
     if(d.action==='set-multi' && !validValues(d.value))return;
     if(d.action==='set-pick' && !(typeof d.value==='string'&&d.value.trim()&&d.value.length<=MAX_TEXT))return;
     if(d.action==='set-pick-index' && !(Number.isInteger(Number(d.value))&&Number(d.value)>=1&&Number(d.value)<=100))return;
@@ -536,8 +537,4 @@
       window.dispatchEvent(new CustomEvent('forcepilot-page-result',{detail:{requestId:d.requestId,version:BUILD,result}}));
     }
   },{capture:true});
-
-  // Compatibility: accept legacy event names while emitting the current protocol.
-  window.addEventListener('ss-sensei-bridge-init', event=>window.dispatchEvent(new CustomEvent('forcepilot-bridge-init',{detail:event.detail})));
-  window.addEventListener('ss-sensei-page-action', event=>window.dispatchEvent(new CustomEvent('forcepilot-page-action',{detail:event.detail})));
 })();

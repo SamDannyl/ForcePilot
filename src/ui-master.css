@@ -1,0 +1,862 @@
+/* ForcePilot unified UI system — v2.0 final polish.
+   Layout/styling only; behavior remains owned by the existing scripts. */
+:root{
+  --fp-ui-font:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
+  --fp-ui-text:#1d2433;
+  --fp-ui-text-secondary:#667085;
+  --fp-ui-text-muted:#7f8a99;
+  --fp-ui-border:#e3e7ee;
+  --fp-ui-border-strong:#cfd6df;
+  --fp-ui-surface:#fff;
+  --fp-ui-surface-subtle:#f7f9fc;
+  --fp-ui-blue:#1976d2;
+  --fp-ui-blue-hover:#1565c0;
+  --fp-ui-blue-soft:rgba(25,118,210,.06);
+  --fp-ui-focus:rgba(25,118,210,.28);
+  --fp-ui-danger:#c62828;
+  --fp-ui-success:#2e7d32;
+  --fp-ui-radius-card:12px;
+  --fp-ui-radius-control:9px;
+  --fp-ui-radius-modal:14px;
+  --fp-ui-scroll-thumb:#c2cad4;
+}
+
+html,body{font-family:var(--fp-ui-font),Arial,sans-serif;font-size:13px;line-height:1.45}
+button,input,select,textarea{font-family:var(--fp-ui-font),Arial,sans-serif}
+
+/* Shared thin scrollbars. overflow:auto only exposes a scroll range when content
+   actually exceeds its container; gutter remains auto so fitted lists reserve no space. */
+.fp-scroll-region,
+.list,
+.field-list,
+.result-list,
+.testing-editor-cases,
+.testing-workspace-page,
+.testing-preview-page,
+.testing-start-page,
+.testing-summary-page,
+.testing-general-evidence-body,
+.testing-dialog-list,
+.testing-autofill-list,
+.recording-list,
+.editor-list,
+.multi-options{
+  scrollbar-width:thin;
+  scrollbar-color:var(--fp-ui-scroll-thumb) transparent;
+  scrollbar-gutter:auto;
+  overscroll-behavior:contain;
+}
+.fp-scroll-region::-webkit-scrollbar,
+.list::-webkit-scrollbar,
+.field-list::-webkit-scrollbar,
+.result-list::-webkit-scrollbar,
+.testing-editor-cases::-webkit-scrollbar,
+.testing-workspace-page::-webkit-scrollbar,
+.testing-preview-page::-webkit-scrollbar,
+.testing-start-page::-webkit-scrollbar,
+.testing-summary-page::-webkit-scrollbar,
+.testing-general-evidence-body::-webkit-scrollbar,
+.testing-dialog-list::-webkit-scrollbar,
+.testing-autofill-list::-webkit-scrollbar,
+.recording-list::-webkit-scrollbar,
+.editor-list::-webkit-scrollbar,
+.multi-options::-webkit-scrollbar{width:6px;height:6px}
+.fp-scroll-region::-webkit-scrollbar-track,
+.list::-webkit-scrollbar-track,
+.field-list::-webkit-scrollbar-track,
+.result-list::-webkit-scrollbar-track,
+.testing-editor-cases::-webkit-scrollbar-track,
+.testing-workspace-page::-webkit-scrollbar-track,
+.testing-preview-page::-webkit-scrollbar-track,
+.testing-start-page::-webkit-scrollbar-track,
+.testing-summary-page::-webkit-scrollbar-track,
+.testing-general-evidence-body::-webkit-scrollbar-track,
+.testing-dialog-list::-webkit-scrollbar-track,
+.testing-autofill-list::-webkit-scrollbar-track,
+.recording-list::-webkit-scrollbar-track,
+.editor-list::-webkit-scrollbar-track,
+.multi-options::-webkit-scrollbar-track{background:transparent}
+.fp-scroll-region::-webkit-scrollbar-thumb,
+.list::-webkit-scrollbar-thumb,
+.field-list::-webkit-scrollbar-thumb,
+.result-list::-webkit-scrollbar-thumb,
+.testing-editor-cases::-webkit-scrollbar-thumb,
+.testing-workspace-page::-webkit-scrollbar-thumb,
+.testing-preview-page::-webkit-scrollbar-thumb,
+.testing-start-page::-webkit-scrollbar-thumb,
+.testing-summary-page::-webkit-scrollbar-thumb,
+.testing-general-evidence-body::-webkit-scrollbar-thumb,
+.testing-dialog-list::-webkit-scrollbar-thumb,
+.testing-autofill-list::-webkit-scrollbar-thumb,
+.recording-list::-webkit-scrollbar-thumb,
+.editor-list::-webkit-scrollbar-thumb,
+.multi-options::-webkit-scrollbar-thumb{background:var(--fp-ui-scroll-thumb);border-radius:999px}
+.fp-scroll-region::-webkit-scrollbar-thumb:hover,
+.list::-webkit-scrollbar-thumb:hover,
+.field-list::-webkit-scrollbar-thumb:hover,
+.result-list::-webkit-scrollbar-thumb:hover,
+.testing-editor-cases::-webkit-scrollbar-thumb:hover,
+.testing-workspace-page::-webkit-scrollbar-thumb:hover,
+.testing-preview-page::-webkit-scrollbar-thumb:hover,
+.testing-start-page::-webkit-scrollbar-thumb:hover,
+.testing-summary-page::-webkit-scrollbar-thumb:hover,
+.testing-general-evidence-body::-webkit-scrollbar-thumb:hover,
+.testing-dialog-list::-webkit-scrollbar-thumb:hover,
+.testing-autofill-list::-webkit-scrollbar-thumb:hover,
+.recording-list::-webkit-scrollbar-thumb:hover,
+.editor-list::-webkit-scrollbar-thumb:hover,
+.multi-options::-webkit-scrollbar-thumb:hover{background:#aab4c1}
+
+/* ---------------- Side Panel ---------------- */
+html,body{min-height:0}
+.shell{height:100dvh;overflow:hidden}
+.topbar{height:56px;min-height:56px;padding:0 16px}
+.content{padding:16px;gap:16px;min-height:0;overflow:hidden}
+.eyebrow{font-size:11px;line-height:16px;font-weight:600;letter-spacing:.02em;text-transform:uppercase}
+.context-card{padding:14px;border-radius:var(--fp-ui-radius-card);gap:0}
+.context-title{font-size:18px;line-height:24px;font-weight:600;margin-top:3px}
+.context-card .context-sub{font-size:12px;line-height:17px;font-weight:400}
+
+/* Flat home-page context: reserve cards for grouped content, not page status. */
+.home-page-context{padding:0 2px 2px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.home-page-context .context-title{font-size:20px;line-height:26px;font-weight:600;margin:0;color:var(--fp-ui-text);letter-spacing:-.01em}
+.salesforce-connection-inline{display:flex;align-items:center;gap:6px;min-width:0;min-height:20px;margin-top:1px;font-size:13px;line-height:18px;color:var(--fp-ui-text-secondary)}
+.salesforce-connection-inline strong{font-size:13px;line-height:18px;font-weight:600;color:var(--fp-ui-text)}
+.salesforce-connection-inline span:last-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.salesforce-status-dot{width:8px;height:8px;border-radius:50%;background:var(--fp-ui-danger);box-shadow:0 0 0 3px rgba(198,40,40,.08);flex:0 0 8px}
+.salesforce-connection-inline.is-connected .salesforce-status-dot{background:var(--fp-ui-success);box-shadow:0 0 0 3px rgba(46,125,50,.10)}
+.salesforce-connection-inline.is-warning .salesforce-status-dot{background:#b26a00;box-shadow:0 0 0 3px rgba(178,106,0,.08)}
+.salesforce-status-separator{color:var(--fp-ui-text-muted);font-weight:500;flex:0 0 auto}
+.salesforce-connection-status{position:relative;display:grid!important;grid-template-columns:8px minmax(0,1fr);align-items:start;gap:9px;margin-top:10px;padding:9px 10px!important;border:1px solid var(--fp-ui-border)!important;border-radius:9px!important;background:var(--fp-ui-surface-subtle)!important;box-shadow:none!important}
+.salesforce-connection-status::before{content:"";width:8px;height:8px;margin-top:4px;border-radius:50%;background:var(--fp-ui-danger);box-shadow:0 0 0 3px rgba(198,40,40,.10)}
+.salesforce-connection-status.is-connected::before{background:var(--fp-ui-success);box-shadow:0 0 0 3px rgba(46,125,50,.10)}
+.salesforce-connection-status strong{font-size:12px;line-height:17px;font-weight:600}
+.salesforce-connection-status span{font-size:11px;line-height:16px;font-weight:400;color:var(--fp-ui-text-secondary)}
+
+.home-actions-stack{gap:8px}
+.home-actions .primary,.home-actions .secondary{height:50px;min-height:50px;border-radius:var(--fp-ui-radius-control);font-size:13px;font-weight:600}
+.primary,.secondary{height:50px;min-height:50px;border-radius:var(--fp-ui-radius-control);font-size:13px;line-height:18px;font-weight:600}
+.primary{background:var(--fp-ui-blue);border:1px solid var(--fp-ui-blue);color:#fff;box-shadow:0 1px 2px rgba(25,118,210,.18)}
+.primary:hover:not(:disabled){background:var(--fp-ui-blue-hover);border-color:var(--fp-ui-blue-hover);box-shadow:0 2px 6px rgba(25,118,210,.16)}
+.primary:active:not(:disabled){transform:translateY(1px);box-shadow:0 1px 2px rgba(25,118,210,.14)}
+.secondary{background:var(--fp-ui-surface);border:1px solid var(--fp-ui-border-strong);color:#344054;box-shadow:0 1px 1px rgba(16,24,40,.03)}
+.secondary:hover:not(:disabled){background:#f8fafc;border-color:#b8c1cc;color:#1f2937;box-shadow:0 1px 3px rgba(16,24,40,.06)}
+.secondary:active:not(:disabled){background:#f1f4f7;transform:translateY(1px)}
+.primary:focus-visible,.secondary:focus-visible{outline:2px solid var(--fp-ui-focus);outline-offset:2px}
+
+/* Resume card keeps the active-session state compact and obvious. */
+.testing-session-active{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding:12px 14px;border:1px solid var(--fp-ui-border);border-radius:12px;background:var(--fp-ui-surface);box-shadow:0 1px 2px rgba(16,24,40,.04)}
+.testing-session-active-copy{min-width:0;display:flex;flex-direction:column;gap:2px}
+.testing-session-active-copy .eyebrow{margin:0}
+.testing-session-active-copy strong{font-size:13px;line-height:18px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.testing-session-active-copy span:last-child{font-size:11px;line-height:16px;font-weight:400;color:var(--fp-ui-text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.testing-session-active .secondary{height:40px;min-height:40px;padding:0 12px;flex:none}
+
+.section{gap:10px}
+.section-title-row{min-height:24px}
+.section-title-row h2{font-size:13px;line-height:18px;font-weight:600;color:var(--fp-ui-text);letter-spacing:0}
+.section-title-with-icon{display:flex;align-items:center;gap:7px}
+.section-title-icon{color:var(--fp-ui-text-secondary)}
+.section-count{min-width:22px;height:22px;padding:0 6px;border-radius:999px;background:#eef1f4;color:#5f6368;font-size:11px;line-height:22px;font-weight:600}
+.search{height:40px;border-radius:var(--fp-ui-radius-control);font-size:12px}
+
+/* Home owns no page scrollbar; the saved-recordings list is the only home list that can scroll. */
+.recent-section{min-height:0;flex:1 1 auto}
+.recent-section .list{min-height:0;flex:1 1 auto;overflow-y:auto;overflow-x:hidden;border-radius:0;border:0;background:transparent;box-shadow:none}
+.recording-row{min-height:60px;padding:10px 12px;border-radius:8px}
+.recording-name{font-size:13px;line-height:18px;font-weight:600}
+.row-meta{font-size:11px;line-height:16px;font-weight:400;color:var(--fp-ui-text-secondary)}
+.row-chevron{width:24px;height:24px;font-size:16px;color:#8a94a1}
+.empty-state{padding:20px 10px}
+.empty-state strong{font-size:13px;line-height:18px;font-weight:600}
+.empty-state span{font-size:11px;line-height:16px;font-weight:400;color:var(--fp-ui-text-secondary)}
+
+/* Detail + live recording screens: only the field collection can scroll. */
+.detail-page{min-height:0;flex:1 1 auto;gap:12px;overflow:hidden}
+.detail-field-section{min-height:0;flex:1 1 auto;display:flex;flex-direction:column;gap:8px}
+.detail-fields{min-height:0;flex:1 1 auto;overflow-y:auto;overflow-x:hidden;border:1px solid var(--fp-ui-border);border-radius:10px;background:var(--fp-ui-surface)}
+.detail-fields-title{flex:0 0 auto}
+.recording-header{border-radius:12px;padding:14px}
+.recording-header h1{font-size:18px;line-height:24px;font-weight:600}
+.field-name{font-size:13px;line-height:18px;font-weight:600}
+.field-value,.field-type{font-size:11px!important;line-height:16px!important;font-weight:400!important;color:var(--fp-ui-text-secondary)!important}
+.step-number{font-size:11px;font-weight:600}
+
+.content > .recording-top + .recording-note + #recording-field-list{min-height:0;flex:1 1 auto;overflow-y:auto;overflow-x:hidden;border:1px solid var(--fp-ui-border);border-radius:10px;background:var(--fp-ui-surface)}
+.recording-top{flex:0 0 auto}
+.recording-note{flex:0 0 auto;font-size:11px;line-height:16px;color:var(--fp-ui-text-secondary)}
+
+/* ---------------- Testing ---------------- */
+.testing-page{min-width:0;min-height:0}
+.testing-topbar{align-items:flex-start;gap:12px}
+.testing-heading h1{font-size:22px!important;line-height:28px!important;font-weight:600!important;letter-spacing:-.015em}
+.testing-subtitle{font-size:13px;line-height:18px;font-weight:400;color:var(--fp-ui-text-secondary)}
+.testing-heading-wrap{gap:8px}
+.testing-back{margin-top:0}
+.testing-card,.testing-cases-card,.testing-general-evidence,.testing-summary-card,.testing-editor-summary-card,.testing-editor-case{border-radius:var(--fp-ui-radius-card)}
+.testing-card,.testing-summary-card,.testing-editor-summary-card{padding:16px}
+.testing-card h2,.testing-summary-card h2,.testing-editor-summary-card h2{font-size:14px;line-height:20px;font-weight:600}
+.testing-card p,.testing-summary-card p,.testing-editor-summary-card p{font-size:13px;line-height:18px;font-weight:400;color:var(--fp-ui-text-secondary)}
+.testing-start-page,.testing-preview-page,.testing-summary-page{gap:16px}
+.testing-start-page .testing-message,.testing-summary-page .testing-message{flex:0 0 auto}
+.testing-actions{gap:8px}
+.testing-start-button,.testing-finish,.testing-capture-secondary{min-height:50px;height:50px;border-radius:var(--fp-ui-radius-control)!important;font-size:13px;font-weight:600}
+.testing-header-action{height:40px;min-height:40px;padding:0 11px;border:1px solid var(--fp-ui-border);border-radius:9px;background:var(--fp-ui-surface);color:var(--fp-ui-text-secondary);font-size:12px;line-height:18px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:6px;transition:background .12s ease,border-color .12s ease,color .12s ease,box-shadow .12s ease}
+.testing-header-action:hover{background:var(--fp-ui-blue-soft);border-color:var(--fp-ui-border-strong);color:var(--fp-ui-blue)}
+.testing-header-action:focus-visible{outline:2px solid var(--fp-ui-focus);outline-offset:2px}
+.testing-paste-title-row{align-items:center}
+.testing-template-download{height:40px;min-height:40px;padding:0 11px}
+.testing-paste-help,.testing-format-note,.testing-skip-note{font-size:11px;line-height:16px;font-weight:400;color:var(--fp-ui-text-secondary)}
+.testing-format-note span{font-weight:600}
+.testing-skip-divider{margin:0;height:24px}
+.testing-skip-button{min-height:50px;height:50px}
+
+/* Preview: one Start Testing action in the header; the cases list becomes the route's scroll region. */
+.testing-preview-page{display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden}
+.testing-editor-cases{min-height:0;overflow-y:auto;overflow-x:hidden;flex:1 1 auto}
+.testing-preview-actions{display:none!important}
+.testing-preview-sticky-start{display:none!important}
+.testing-editor-case-number{font-size:10px;font-weight:600!important}
+.testing-editor-case-meta{font-size:10px;font-weight:400}
+.testing-editor-note{font-size:11px;font-weight:400;color:var(--fp-ui-text-secondary)}
+.testing-editor-controls-label,.testing-editor-title span,.testing-editor-step-field span{font-size:11px;font-weight:600}
+.testing-editor-case-heading input,.testing-editor-step-field textarea{font-size:13px;font-weight:500}
+
+/* Workspace: test-case mode owns the single page scrollbar; evidence-only owns the evidence body scrollbar. */
+.testing-workspace-page{display:flex;flex-direction:column;min-height:0;overflow-y:auto;overflow-x:hidden;padding-bottom:8px}
+.testing-workspace-page .testing-sticky-actions{flex:0 0 auto}
+.testing-workspace-page .testing-cases-card{flex:0 0 auto}
+.testing-workspace-page .testing-general-evidence{flex:0 0 auto}
+.testing-workspace-page .testing-finish{position:sticky!important;bottom:0;z-index:23;box-shadow:0 -8px 14px rgba(15,23,42,.05)}
+.testing-evidence-only-page{overflow:hidden!important;display:flex!important;flex-direction:column!important}
+.testing-evidence-only-page .testing-general-evidence{min-height:0!important;flex:1 1 auto!important;display:flex!important;flex-direction:column!important}
+.testing-evidence-only-page .testing-general-evidence-body{min-height:0!important;flex:1 1 auto!important;overflow-y:auto!important;overflow-x:hidden!important}
+.testing-evidence-only-page .testing-finish{flex:0 0 auto!important}
+
+/* Screenshot cards */
+.testing-evidence-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:8px 0 0}
+.testing-evidence-card{border-radius:9px}
+.testing-evidence-preview{height:auto!important;aspect-ratio:16/9;min-height:0}
+.testing-evidence-preview img{object-fit:cover}
+.testing-evidence-meta{min-height:42px;padding:4px 6px;font-size:10px;line-height:14px}
+.testing-evidence-actions{gap:2px}
+.testing-evidence-icon-action{width:32px!important;min-width:32px!important;height:32px!important;flex:0 0 32px!important;border-radius:7px}
+.testing-evidence-icon-action .fp-icon{width:14px;height:14px}
+
+/* One finish action; no duplicate screenshot action. */
+.testing-workspace-page > .testing-capture-secondary{display:none!important}
+.testing-workspace-page .testing-header-action[data-finish-testing]{display:none!important}
+.testing-workspace-page .testing-header-action#editTestingCases{display:inline-flex}
+
+/* Summary/export hierarchy */
+.testing-summary-card{text-align:center;padding:20px 16px}
+.testing-summary-card h2{font-size:18px;line-height:24px;font-weight:600}
+.testing-summary-card p{margin-top:4px}
+.testing-summary-icon{width:44px;height:44px}
+.testing-summary-stats>div{border-radius:9px;padding:10px 6px}
+.testing-summary-stats strong{font-size:17px;line-height:22px;font-weight:500}
+.testing-summary-stats span{font-size:11px;line-height:15px;font-weight:400}
+.testing-export-section-title{font-size:12px!important;line-height:17px!important;font-weight:600!important}
+.testing-export-button{height:50px!important;min-height:50px!important;border-radius:9px!important}
+.testing-export-help,.testing-summary-primary-actions small{font-size:11px;line-height:16px;font-weight:400;color:var(--fp-ui-text-secondary)}
+.testing-summary-primary-actions{margin-top:16px}
+.testing-summary-primary-actions .secondary{height:44px;min-height:44px}
+
+/* Modals: shell never scrolls; long content lives in the inner region only. */
+.testing-dialog-backdrop,.testing-autofill-overlay{overflow:hidden!important}
+.testing-dialog{border-radius:var(--fp-ui-radius-modal)!important;overflow:hidden!important;max-height:min(82vh,720px)!important}
+.testing-dialog-header{padding:16px!important}
+.testing-dialog-header h2{font-size:16px!important;line-height:22px!important;font-weight:600!important}
+.testing-dialog-header p{font-size:13px!important;line-height:18px!important;font-weight:400!important}
+.testing-dialog-list{padding:10px!important;overflow-y:auto!important;overflow-x:hidden!important}
+.testing-name-dialog{max-width:430px}
+.testing-name-dialog-body{padding:16px!important}
+.testing-name-dialog .testing-name-help{font-size:11px;line-height:16px;font-weight:400;color:var(--fp-ui-text-secondary)}
+.testing-name-field span{font-size:12px!important;line-height:17px!important;font-weight:600!important}
+.testing-name-field input{height:46px!important;border-radius:9px!important;font-size:13px!important;font-weight:500!important}
+.testing-name-actions{padding:0 16px 16px!important;gap:8px}
+.testing-name-actions button{height:44px!important;min-height:44px!important;border-radius:9px!important}
+.testing-autofill-modal{border-radius:var(--fp-ui-radius-modal)!important;overflow:hidden!important}
+.testing-autofill-modal .result-list{overflow-y:auto!important;overflow-x:hidden!important;scrollbar-gutter:auto!important}
+
+/* Result states: icon + text, same alignment, no color-only meaning. */
+.result-status-pill{display:inline-flex;align-items:center;gap:4px;font-size:11px!important;font-weight:500!important}
+.result-status-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;font-size:11px;line-height:14px;font-weight:600;border-radius:50%}
+.result-row.filled .result-status-icon{background:rgba(46,125,50,.10);color:var(--fp-ui-success)}
+.result-row.skipped .result-status-icon{background:rgba(154,101,0,.10);color:#946200}
+.result-row.failed .result-status-icon{background:rgba(198,40,40,.10);color:var(--fp-ui-danger)}
+.result-row-reason{font-size:11px;line-height:16px;font-weight:400}
+
+/* Shared hit targets and icon-only controls */
+.testing-icon-action,.testing-step-camera,.testing-evidence-toggle,.testing-evidence-icon-action,.testing-image-preview-close{min-width:32px;min-height:32px}
+.testing-icon-action{border-radius:7px}
+.testing-text-button{font-size:11px;line-height:16px;font-weight:600}
+.testing-case-heading strong,.testing-step-text,.testing-case-count{font-weight:500}
+.testing-case-kicker{font-weight:600}
+
+/* Options page: same typography, controls and scrollbar language without changing its manager layout. */
+.page{font-family:var(--fp-ui-font),Arial,sans-serif;font-size:13px;line-height:1.45}
+.page-title-row h1{font-size:18px;line-height:24px;font-weight:600}
+.page-title-row p,.breadcrumb,.editor-summary,.edit-help,.field-count span,.setting-row small{font-size:11px;line-height:16px;font-weight:400}
+.section-title-row h2,.setting-group h3{font-size:14px;line-height:20px;font-weight:600}
+.toolbar .primary,.toolbar .secondary,.actions .primary,.actions .secondary{height:44px;min-height:44px;border-radius:9px;font-size:13px;font-weight:600}
+.panel,.settings-panel{border-radius:12px}
+.recording-list,.editor-list,.multi-options{scrollbar-gutter:auto!important;overscroll-behavior:contain}
+
+/* Popup already follows the compact design direction; keep the rows and status card consistent. */
+.popup{font-family:var(--fp-ui-font),Arial,sans-serif}
+.popup .page-status{border-radius:10px}
+.popup .open-button{height:44px;border-radius:9px}
+.popup .popup-row{height:52px;min-height:52px;padding-left:12px;padding-right:12px;border-radius:9px}
+.popup .row-label{font-size:13px;font-weight:600}
+.popup .status-copy strong{font-size:13px;font-weight:600}
+.popup .status-copy span{font-size:11px;font-weight:400}
+
+@media(max-width:390px){
+  .content{padding:14px}
+  .testing-heading h1{font-size:20px!important;line-height:26px!important}
+  .testing-session-active{grid-template-columns:minmax(0,1fr);align-items:stretch}
+  .testing-session-active .secondary{width:100%}
+}
+
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{scroll-behavior:auto!important;transition:none!important;animation:none!important}
+}
+
+html[data-theme="dark"]{
+  --fp-ui-text:#f5f7fa;
+  --fp-ui-text-secondary:#c4ceda;
+  --fp-ui-text-muted:#9ba9b9;
+  --fp-ui-border:var(--theme-border);
+  --fp-ui-border-strong:var(--theme-border-strong);
+  --fp-ui-surface:var(--theme-surface);
+  --fp-ui-surface-subtle:var(--theme-control);
+  --fp-ui-blue:var(--theme-accent-button);
+  --fp-ui-blue-hover:var(--theme-accent-button-hover);
+  --fp-ui-blue-soft:var(--theme-accent-soft);
+  --fp-ui-focus:var(--theme-accent-focus);
+  --fp-ui-scroll-thumb:#53667c;
+}
+html[data-theme="dark"] .secondary{background:var(--theme-surface-raised)!important;color:var(--theme-text)!important;border-color:var(--theme-border)!important}
+html[data-theme="dark"] .secondary:hover{background:var(--theme-surface-hover)!important;border-color:var(--theme-border-strong)!important;color:#fff!important}
+html[data-theme="dark"] .salesforce-connection-status{background:var(--theme-control)!important;border-color:var(--theme-border)!important}
+html[data-theme="dark"] .salesforce-connection-inline{color:var(--theme-text-secondary)!important}
+html[data-theme="dark"] .salesforce-connection-inline strong{color:var(--theme-text)!important}
+html[data-theme="dark"] .salesforce-status-separator{color:var(--theme-text-muted)!important}
+html[data-theme="dark"] .home-page-context .context-title{color:var(--theme-text)!important}
+html[data-theme="dark"] .salesforce-connection-status span,
+html[data-theme="dark"] .row-meta,
+html[data-theme="dark"] .empty-state span,
+html[data-theme="dark"] .testing-session-active-copy span:last-child,
+html[data-theme="dark"] .testing-subtitle,
+html[data-theme="dark"] .testing-paste-help,
+html[data-theme="dark"] .testing-format-note,
+html[data-theme="dark"] .testing-skip-note,
+html[data-theme="dark"] .recording-note,
+html[data-theme="dark"] .field-value,
+html[data-theme="dark"] .field-type,
+html[data-theme="dark"] .testing-editor-note,
+html[data-theme="dark"] .testing-export-help,
+html[data-theme="dark"] .testing-summary-primary-actions small{color:var(--theme-text-secondary)!important}
+html[data-theme="dark"] .section-count{background:var(--theme-chip-bg);color:var(--theme-chip-text)}
+html[data-theme="dark"] .testing-session-active,
+html[data-theme="dark"] .context-card,
+html[data-theme="dark"] .detail-fields,
+html[data-theme="dark"] .recording-header,
+html[data-theme="dark"] .testing-card,
+html[data-theme="dark"] .testing-cases-card,
+html[data-theme="dark"] .testing-general-evidence,
+html[data-theme="dark"] .testing-summary-card,
+html[data-theme="dark"] .testing-editor-summary-card,
+html[data-theme="dark"] .testing-editor-case,
+html[data-theme="dark"] .testing-evidence-card{background:var(--theme-surface)!important;border-color:var(--theme-border)!important}
+html[data-theme="dark"] .testing-evidence-preview{background:#10161d}
+html[data-theme="dark"] .testing-evidence-icon-action{color:var(--theme-text-muted)}
+html[data-theme="dark"] .testing-evidence-icon-action:hover{background:var(--theme-accent-soft);color:var(--theme-accent)}
+html[data-theme="dark"] .testing-summary-stats>div{background:var(--theme-surface-raised);border-color:var(--theme-border)}
+html[data-theme="dark"] .testing-dialog,
+html[data-theme="dark"] .testing-autofill-modal,
+html[data-theme="dark"] .testing-name-dialog{background:var(--theme-surface)!important;border-color:var(--theme-border)!important}
+html[data-theme="dark"] .testing-name-field input{background:var(--theme-control)!important;border-color:var(--theme-border)!important;color:var(--theme-text)!important}
+html[data-theme="dark"] .search{background:var(--theme-control)!important;border-color:var(--theme-border)!important;color:var(--theme-text)!important}
+html[data-theme="dark"] .search:hover{border-color:var(--theme-border-strong)!important}
+
+/* Final hierarchy refinements */
+.testing-header-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.testing-preview-start{background:var(--fp-ui-blue)!important;border-color:var(--fp-ui-blue)!important;color:#fff!important;box-shadow:0 1px 2px rgba(25,118,210,.18)!important}
+.testing-preview-start:hover{background:var(--fp-ui-blue-hover)!important;border-color:var(--fp-ui-blue-hover)!important;color:#fff!important}
+.testing-page strong,.testing-page b{font-weight:600}
+.testing-dialog-group-title{font-weight:600!important}
+.testing-dialog-step>span:first-child{font-weight:600!important}
+.testing-editor-case-number{font-weight:600!important}
+.testing-export-section-title,.testing-editor-controls-label{font-weight:600!important}
+
+/* Intentional weight exceptions within the hierarchy. */
+.testing-summary-stats strong{font-weight:500!important}
+.testing-case-heading strong,.testing-step-text{font-weight:500!important}
+.testing-session-active-copy strong{font-weight:600!important}
+
+
+/* User-requested final home/session polish */
+.salesforce-connection-status span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.testing-session-active{width:100%;box-sizing:border-box}
+.testing-session-active-copy{gap:1px}
+.testing-session-active-copy strong{font-size:13px;line-height:18px}
+.testing-session-active-copy span:last-child{font-size:11px;line-height:15px}
+.testing-session-active .secondary{justify-self:end;width:auto;min-width:96px;height:36px;min-height:36px;padding:0 14px}
+@media(max-width:390px){.testing-session-active .secondary{width:auto!important}}
+
+/* Final fixes: connection status, active testing session layout, recording header sizing. */
+.salesforce-connection-status strong,
+.salesforce-connection-status span{grid-column:2;min-width:0;}
+.salesforce-connection-status strong{grid-row:1;}
+.salesforce-connection-status span{grid-row:2;white-space:normal;overflow:visible;text-overflow:clip;}
+.testing-session-active{grid-template-columns:minmax(0,1fr) auto!important;align-items:center!important;gap:12px!important;padding:10px 12px!important;}
+.testing-session-active-copy{min-width:0;}
+.testing-session-active-copy strong{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.testing-session-active .secondary{justify-self:end;width:auto!important;min-width:96px;height:36px!important;min-height:36px!important;padding:0 14px!important;}
+.recording-header{min-height:76px;box-sizing:border-box;padding:14px!important;display:flex;flex-direction:column;justify-content:center;gap:2px;}
+.recording-header h1{margin:0!important;line-height:24px!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.recording-header .context-sub{margin:0!important;line-height:18px!important;white-space:nowrap;}
+@media(max-width:390px){
+  .testing-session-active{grid-template-columns:minmax(0,1fr) auto!important;gap:8px!important;}
+  .testing-session-active .secondary{min-width:88px!important;padding:0 12px!important;}
+  .recording-header{min-height:76px;}
+}
+
+/* FINAL: Review Test Cases page — ui-master must load last so these layout rules win. */
+.testing-preview-page{
+  min-height:0 !important;
+  flex:1 1 auto !important;
+  overflow:hidden !important;
+  display:flex !important;
+  flex-direction:column !important;
+  gap:12px !important;
+}
+.testing-preview-header{
+  flex:0 0 auto !important;
+  display:flex !important;
+  flex-direction:column !important;
+  gap:10px !important;
+  min-width:0 !important;
+}
+.testing-preview-header .testing-topbar{
+  flex:0 0 auto !important;
+}
+.testing-preview-header .testing-heading-wrap{
+  flex:1 1 auto !important;
+  min-width:0 !important;
+}
+.testing-preview-header .testing-heading{
+  max-width:none !important;
+  min-width:0 !important;
+  flex:1 1 auto !important;
+}
+.testing-preview-header .testing-heading h1{
+  max-width:none !important;
+  font-size:20px !important;
+  line-height:24px !important;
+  font-weight:600 !important;
+  white-space:nowrap !important;
+  overflow:hidden !important;
+  text-overflow:ellipsis !important;
+  overflow-wrap:normal !important;
+  word-break:normal !important;
+}
+.testing-preview-header .testing-subtitle{
+  white-space:nowrap !important;
+  overflow:hidden !important;
+  text-overflow:ellipsis !important;
+}
+.testing-preview-header .testing-start-button{
+  width:100% !important;
+  min-width:0 !important;
+  min-height:44px !important;
+  height:44px !important;
+  border-radius:9px !important;
+}
+.testing-preview-workspace{
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  overflow-y:auto !important;
+  overflow-x:hidden !important;
+  overscroll-behavior:contain !important;
+  display:flex !important;
+  flex-direction:column !important;
+  gap:12px !important;
+  padding-right:2px !important;
+  padding-bottom:2px !important;
+}
+.testing-preview-page .testing-editor-cases{
+  flex:0 0 auto !important;
+  min-height:auto !important;
+  max-height:none !important;
+  overflow:visible !important;
+}
+.testing-preview-workspace .testing-editor-summary-card,
+.testing-preview-workspace .testing-editor-cases,
+.testing-preview-workspace .testing-add-test-case,
+.testing-preview-workspace .testing-editor-note{
+  flex-shrink:0 !important;
+}
+.testing-preview-workspace .testing-editor-summary-card{
+  box-shadow:none !important;
+  border-radius:12px !important;
+}
+.testing-preview-workspace .testing-editor-summary-top{
+  padding:12px 14px 8px !important;
+}
+.testing-preview-workspace .testing-editor-summary-top h2{
+  font-size:14px !important;
+  line-height:20px !important;
+  white-space:nowrap !important;
+}
+.testing-preview-workspace .testing-editor-meta{
+  grid-template-columns:minmax(0,1fr) !important;
+  padding:0 14px 10px !important;
+}
+.testing-preview-workspace .testing-editor-controls{
+  min-height:38px !important;
+  padding:7px 14px !important;
+  background:transparent !important;
+}
+.testing-preview-workspace .testing-editor-case{
+  padding:0 !important;
+  border-radius:12px !important;
+  box-shadow:none !important;
+  overflow:hidden !important;
+}
+.testing-preview-workspace .testing-editor-case-header{
+  min-height:46px !important;
+  margin:0 !important;
+  padding:9px 11px !important;
+  align-items:center !important;
+}
+.testing-preview-workspace .testing-editor-case-toggle{
+  flex:1 1 auto !important;
+  min-width:0 !important;
+  color:var(--mui-text,var(--text)) !important;
+}
+.testing-preview-workspace .testing-editor-case-label{
+  min-width:0 !important;
+  font-size:12px !important;
+  line-height:18px !important;
+  font-weight:650 !important;
+  white-space:nowrap !important;
+  overflow:hidden !important;
+  text-overflow:ellipsis !important;
+}
+.testing-preview-workspace .testing-editor-case-meta{
+  flex:0 0 auto !important;
+  padding:0 !important;
+  font-size:10px !important;
+  line-height:16px !important;
+}
+.testing-preview-workspace .testing-editor-case-body{
+  padding:0 11px 11px !important;
+}
+.testing-preview-workspace .testing-editor-title-compact{
+  margin:0 0 10px !important;
+}
+.testing-preview-workspace .testing-editor-title-compact input{
+  height:38px !important;
+  font-size:12px !important;
+}
+.testing-preview-workspace .testing-editor-steps{
+  gap:9px !important;
+}
+.testing-preview-workspace .testing-editor-step{
+  grid-template-columns:26px minmax(0,1fr) !important;
+  gap:7px !important;
+}
+.testing-preview-workspace .testing-editor-step-number{
+  width:24px !important;
+  height:24px !important;
+  margin-top:19px !important;
+}
+.testing-preview-workspace .testing-editor-step-field > span{
+  font-size:10px !important;
+  line-height:14px !important;
+  font-weight:600 !important;
+}
+.testing-preview-workspace .testing-editor-step-field textarea{
+  min-height:40px !important;
+  height:40px !important;
+  padding:9px 10px !important;
+  resize:none !important;
+  font-size:12px !important;
+  line-height:18px !important;
+}
+.testing-preview-workspace .testing-add-step{
+  height:34px !important;
+  justify-content:flex-start !important;
+  padding:0 4px !important;
+}
+.testing-preview-workspace .testing-add-test-case{
+  min-height:42px !important;
+  height:42px !important;
+}
+.testing-preview-workspace .testing-editor-note{
+  min-height:40px !important;
+  align-items:center !important;
+  padding:8px 10px !important;
+}
+
+
+/* v2.0 final polish: compact evidence metadata, stable naming dialog actions, and current-page hierarchy. */
+.testing-evidence-meta{
+  min-height:28px !important;
+  height:28px !important;
+  padding:1px 5px !important;
+  font-size:9px !important;
+  line-height:12px !important;
+  gap:2px !important;
+  align-items:center !important;
+}
+.testing-evidence-actions{
+  gap:1px !important;
+  align-items:center !important;
+}
+.testing-evidence-icon-action{
+  width:26px !important;
+  min-width:26px !important;
+  height:26px !important;
+  min-height:26px !important;
+  flex:0 0 26px !important;
+  border-radius:6px !important;
+}
+.testing-evidence-icon-action .fp-icon{width:13px !important;height:13px !important}
+.testing-evidence-preview{aspect-ratio:1.9 / 1 !important}
+.testing-name-actions{
+  display:grid !important;
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+  gap:10px !important;
+  padding:14px 16px 16px !important;
+  align-items:stretch !important;
+}
+.testing-name-actions .action-button{
+  width:100% !important;
+  min-width:0 !important;
+  height:44px !important;
+  min-height:44px !important;
+  margin:0 !important;
+}
+.testing-name-field input{height:46px !important}
+.testing-name-help{
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+/* Final recording-detail header polish: flat, no card and no decorative icon. */
+.recording-header.recording-header-flat{
+  min-height:0!important;
+  padding:2px 2px 4px!important;
+  border:0!important;
+  border-radius:0!important;
+  background:transparent!important;
+  box-shadow:none!important;
+  display:flex!important;
+  flex-direction:column!important;
+  align-items:flex-start!important;
+  justify-content:flex-start!important;
+  gap:2px!important;
+}
+.recording-header.recording-header-flat .eyebrow{margin:0!important;font-size:11px!important;line-height:16px!important;color:var(--text-secondary)!important;}
+.recording-header.recording-header-flat h1{margin:0!important;font-size:18px!important;line-height:24px!important;font-weight:600!important;color:var(--mui-on-surface)!important;}
+.recording-header.recording-header-flat .context-sub{margin:0!important;font-size:12px!important;line-height:18px!important;color:var(--text-secondary)!important;}
+.recording-header.recording-header-flat .fp-icon,.recording-header.recording-header-flat svg{display:none!important;}
+
+
+/* ==========================================================================
+   Unified ForcePilot route header
+   Shared by Testing, Recording, Autofill and Autofill Results.
+   The title is intentionally single-line and never ellipsized.
+   ========================================================================== */
+.fp-route-header,
+.testing-topbar.fp-route-header{
+  display:flex !important;
+  align-items:center !important;
+  justify-content:space-between !important;
+  gap:12px !important;
+  min-width:0 !important;
+  flex:0 0 auto !important;
+}
+.fp-route-header .testing-heading-wrap{
+  display:flex !important;
+  align-items:center !important;
+  gap:8px !important;
+  flex:1 1 auto !important;
+  min-width:0 !important;
+}
+.fp-route-header .backtop{
+  flex:0 0 auto !important;
+  margin:0 !important;
+  align-self:center !important;
+  white-space:nowrap !important;
+}
+.fp-route-header .testing-heading{
+  flex:1 1 auto !important;
+  min-width:0 !important;
+  max-width:none !important;
+  padding-top:0 !important;
+  overflow:visible !important;
+}
+.fp-route-header .testing-heading .eyebrow{
+  display:block !important;
+  margin:0 !important;
+  font-size:11px !important;
+  line-height:16px !important;
+  font-weight:600 !important;
+  letter-spacing:.02em !important;
+  text-transform:uppercase !important;
+}
+.fp-route-header .testing-heading h1{
+  display:block !important;
+  margin:0 !important;
+  padding:0 !important;
+  max-width:none !important;
+  width:max-content !important;
+  min-width:0 !important;
+  font-family:var(--fp-ui-font,Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif) !important;
+  font-size:20px !important;
+  line-height:26px !important;
+  font-weight:600 !important;
+  letter-spacing:-.01em !important;
+  white-space:nowrap !important;
+  overflow:visible !important;
+  text-overflow:clip !important;
+  overflow-wrap:normal !important;
+  word-break:normal !important;
+}
+.fp-route-header .testing-subtitle{
+  display:block !important;
+  margin:1px 0 0 !important;
+  font-family:var(--fp-ui-font,Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif) !important;
+  font-size:13px !important;
+  line-height:18px !important;
+  font-weight:400 !important;
+  color:var(--fp-ui-text-secondary,var(--muted)) !important;
+  white-space:nowrap !important;
+  overflow:visible !important;
+  text-overflow:clip !important;
+}
+.fp-route-header .testing-header-actions{
+  flex:0 0 auto !important;
+  align-self:center !important;
+  display:flex !important;
+  align-items:center !important;
+}
+/* Results keep the status color, but not a different font treatment. */
+.fp-route-header .testing-subtitle.result-neutral-message{color:var(--warning) !important;font-weight:400 !important}
+.fp-route-header .testing-subtitle.result-success-message{color:var(--success) !important;font-weight:400 !important}
+.fp-route-header .testing-subtitle.result-failure-message{color:var(--danger) !important;font-weight:400 !important}
+
+@media(max-width:390px){
+  .fp-route-header,
+  .testing-topbar.fp-route-header{gap:8px !important}
+  .fp-route-header .testing-heading h1{font-size:20px !important;line-height:26px !important}
+}
+
+
+/* v2.0 UX pass: compact controls, full-height result list, and stable Testing layouts. */
+.detail-actions .action-button {
+  height: 38px !important;
+  min-height: 38px !important;
+  padding: 0 11px !important;
+  border-radius: 8px !important;
+}
+.detail-actions .action-button .fp-icon { width:16px !important; height:16px !important; }
+.run-selected-footer { gap:8px !important; padding:5px 2px 0 !important; margin-top:1px !important; }
+.run-selected-autofill { height:36px !important; min-height:36px !important; padding:0 10px !important; border-radius:7px !important; }
+.run-selected-autofill .fp-icon { width:15px !important; height:15px !important; }
+.run-selected-toggle .fp-icon { color:currentColor !important; fill:currentColor !important; }
+
+/* Autofill Results uses the remaining vertical space instead of stopping at a fixed max-height. */
+.content > .result-page { display:flex !important; flex-direction:column !important; min-height:0 !important; }
+.content > .result-page > .result-section { display:flex !important; flex-direction:column !important; flex:1 1 auto !important; min-height:0 !important; }
+.content > .result-page .result-list { flex:1 1 auto !important; min-height:0 !important; max-height:none !important; }
+
+/* Testing complete: compact and consistent in both evidence-only and test-case modes. */
+.testing-summary-page { gap:10px !important; overflow:hidden !important; }
+.testing-summary-page .testing-summary-body { min-height:0 !important; flex:1 1 auto !important; }
+.testing-summary-page .testing-summary-card { padding:12px !important; }
+.testing-summary-page .testing-summary-icon { width:38px !important; height:38px !important; margin:0 auto 7px !important; }
+.testing-summary-page .testing-summary-icon .fp-icon { width:19px !important; height:19px !important; }
+.testing-summary-page .testing-summary-card h2 { font-size:15px !important; line-height:20px !important; }
+.testing-summary-page .testing-summary-card p { margin:3px auto 9px !important; font-size:11px !important; line-height:16px !important; }
+.testing-summary-page .testing-summary-stats { margin-bottom:9px !important; gap:5px !important; }
+.testing-summary-page .testing-summary-stats > div { padding:7px 5px !important; }
+.testing-summary-page .testing-summary-stats strong { font-size:15px !important; line-height:19px !important; }
+.testing-summary-page .testing-export-name { padding:7px 9px !important; }
+.testing-summary-page .testing-export-section { margin-top:8px !important; padding-top:8px !important; }
+.testing-summary-page .testing-export-section-title { margin-bottom:5px !important; }
+.testing-summary-page .testing-export-actions { gap:6px !important; }
+.testing-summary-page .testing-export-item .testing-export-button,
+.testing-summary-page .testing-export-button { height:36px !important; min-height:36px !important; padding:0 10px !important; }
+.testing-summary-page .testing-export-empty-hint { margin-top:5px !important; }
+.testing-summary-page .testing-summary-primary-actions { margin-top:8px !important; }
+.testing-summary-page .testing-summary-primary-actions .action-button { height:36px !important; min-height:36px !important; }
+
+.testing-workspace-page .testing-evidence-context { display:none !important; }
+.testing-paste-title-row .testing-template-download .fp-icon,
+.testing-template-download .fp-icon { color:currentColor !important; fill:currentColor !important; }
+html[data-theme="dark"] .testing-template-download,
+html[data-theme="dark"] .testing-paste-title-row .testing-template-download { color:var(--theme-text) !important; }
+
+@media(max-width:390px){ .content > .result-page .result-list { max-height:none !important; } }
+
+
+/* Options-page controls must win over the shared 44px action-button rule. */
+.page #edit,
+.page #reset,
+.page .editor-actions .button-with-icon {
+  height:36px !important;
+  min-height:36px !important;
+  padding:0 11px !important;
+}
+.page .more-popover { min-width:190px !important; width:190px !important; }
+.page .more-popover .more-danger {
+  width:100% !important;
+  min-width:0 !important;
+  max-width:none !important;
+}
+.page .more-popover .more-danger span {
+  overflow:visible !important;
+  text-overflow:clip !important;
+  white-space:nowrap !important;
+}
+
+/* Popup compact geometry — intentionally scoped so shared controls elsewhere are untouched. */
+.popup{font-family:var(--fp-ui-font),Arial,sans-serif;width:320px;padding:12px 16px 14px}
+.popup .popup-header{height:30px;margin:0 0 8px;padding:0 0 8px}
+.popup .brand{height:22px;gap:7px}
+.popup .brand-icon{width:23px;height:23px;flex-basis:23px}
+.popup .brand-word{width:82px}
+.popup .page-status{min-height:0;height:auto;margin:0 0 8px;padding:4px 0 6px;border:0;border-radius:0;background:transparent;box-shadow:none}
+.popup .status-dot{width:7px;height:7px;flex-basis:7px}
+.popup .status-copy strong{font-size:13px;line-height:17px}
+.popup .status-copy span{font-size:11px;line-height:15px}
+.popup .open-button{height:40px;margin:0 0 6px;border-radius:8px}
+.popup .popup-row{height:44px;min-height:44px;margin:0 0 4px;padding:0 8px;border-radius:8px;grid-template-columns:24px minmax(0,1fr) 20px;column-gap:9px}
+.popup .row-icon{width:24px;height:24px}
+.popup .row-label{font-size:13px;line-height:17px}
+.popup .row-arrow{width:20px;height:20px}
+.popup .theme-row{margin-bottom:0}
+.popup .popup-theme-switch{width:38px;height:22px}
+.popup .popup-theme-switch .slider:before{width:16px;height:16px;top:2px;left:2px}
+.popup .popup-theme-switch input:checked + .slider:before{transform:translateX(15px)}
+@media(max-height:420px){.popup{padding-top:10px;padding-bottom:10px}.popup .popup-header{margin-bottom:5px;padding-bottom:6px}.popup .page-status{margin-bottom:5px;padding-bottom:4px}.popup .open-button{margin-bottom:4px}.popup .popup-row{height:40px;min-height:40px}}
+
+/* v2.0 final popup compact override */
+.popup{width:304px !important;}
+.popup .open-button{height:36px !important;min-height:36px !important;margin-bottom:5px !important;padding:0 12px !important;}
+.popup .popup-row{height:42px !important;min-height:42px !important;margin-bottom:4px !important;}
+.popup .page-status{margin-bottom:6px !important;padding-top:3px !important;padding-bottom:5px !important;}
+
+
+/* Keyboard navigation: keep a visible focus ring even when component rules use !important. */
+:where(button, a, input, select, textarea, [role="button"], [tabindex]:not([tabindex="-1"])):focus-visible{
+  outline:2px solid var(--fp-ui-focus) !important;
+  outline-offset:2px !important;
+}

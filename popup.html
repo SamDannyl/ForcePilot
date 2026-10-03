@@ -5,45 +5,46 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>ForcePilot</title>
   <link rel="stylesheet" href="popup.css">
+  <link rel="stylesheet" href="src/theme.css"><link rel="stylesheet" href="src/ui-master.css">
 </head>
-
 <body>
-  <div class="popup">
+  <div class="popup" role="application" aria-label="ForcePilot">
     <header class="popup-header">
-      <div class="brand">
-        <img src="branding/forcepilot-icon.png" class="icon" alt="ForcePilot">
-        <img src="branding/forcepilot-wordmark.png" class="word" alt="ForcePilot">
+      <div class="brand" aria-label="ForcePilot">
+        <img src="branding/forcepilot-icon.png" class="brand-icon" alt="">
+        <img src="branding/forcepilot-wordmark.png" class="brand-word brand-word-light" alt="ForcePilot">
+        <img src="branding/forcepilot-wordmark-dark.png" class="brand-word brand-word-dark" alt="ForcePilot">
       </div>
-      <span id="status" class="status">Checking…</span>
     </header>
 
     <main>
-      <section class="connection" aria-live="polite">
-        <span id="statusDot" class="status-dot"></span>
+      <section class="page-status" aria-live="polite">
+        <span id="statusDot" class="status-dot" aria-hidden="true"></span>
         <div class="status-copy">
           <strong id="connectionTitle">Checking connection</strong>
           <span id="connectionDetail">Checking this tab…</span>
         </div>
       </section>
 
-      <section class="intro">
-        <h1 id="heroTitle">Record &amp; autofill Salesforce fields</h1>
-        <p id="heroDetail"><em>Record field changes and autofill them later from the ForcePilot sidebar.</em></p>
-      </section>
-
-      <button class="primary open-button" id="open">
+      <button class="primary open-button" id="open" type="button">
         <span class="open-icon" aria-hidden="true"><span class="fp-icon-slot" data-icon="play"></span></span>
         <span id="openLabel">Launch ForcePilot</span>
       </button>
 
-      <button class="manage-link" id="manage">
-        <span class="manage-icon" aria-hidden="true"><span class="fp-icon-slot" data-icon="settings"></span></span>
-        <span>
-          <strong>Manage recordings</strong>
-          <small>Edit, rename, or remove your recordings</small>
-        </span>
-        <span class="manage-arrow" aria-hidden="true"><span class="fp-icon-slot" data-icon="arrowRight"></span></span>
+      <button class="popup-row options-link" id="manage" type="button">
+        <span class="row-icon" aria-hidden="true"><span class="fp-icon-slot" data-icon="settings"></span></span>
+        <span class="row-label">Recordings &amp; Settings</span>
+        <span class="row-arrow" aria-hidden="true"><span class="fp-icon-slot" data-icon="chevron"></span></span>
       </button>
+
+      <div class="popup-row theme-row">
+        <div class="row-icon theme-icon" aria-hidden="true"><span class="fp-icon-slot" data-icon="darkMode"></span></div>
+        <label class="row-label theme-label" for="darkMode">Dark mode</label>
+        <label class="switch popup-theme-switch" title="Toggle dark mode">
+          <input id="darkMode" type="checkbox" role="switch" aria-label="Dark mode">
+          <span class="slider" aria-hidden="true"></span>
+        </label>
+      </div>
     </main>
   </div>
 

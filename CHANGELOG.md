@@ -1,6 +1,76 @@
 # Changelog
 
 All notable changes to ForcePilot are documented here.
+## [2.0.0] — Major Testing, UX & Reliability Update
+
+ForcePilot 2.0 brings a more complete testing workflow, faster Salesforce interaction, improved evidence handling, new launcher options, and a cleaner overall experience.
+
+### Testing & Test Cases
+
+* Added a more structured Testing workspace with **collapsible test cases and steps**.
+* Added **Start Testing, Resume Testing, Finish Testing, and End Session** workflows.
+* Added expand/collapse controls for test cases and steps.
+* Added sticky **Screenshot** and **Autofill** actions during testing.
+* Improved Testing Complete and session-resume experiences.
+* Testing sessions now reopen with test cases and steps expanded by default.
+* Simplified the Testing workspace and reduced unnecessary scrolling.
+
+### Evidence & Screenshots
+
+* Added **Paste Screenshot** and **Ctrl+V** support for Testing Evidence.
+* Added timestamp overlays to native ForcePilot screenshots with date and 12-hour time.
+* Pasted screenshots remain unchanged and do not receive ForcePilot timestamps.
+* Added clearer screenshot-capture and clipboard-copy feedback.
+* Improved screenshot capture on extension and restricted pages.
+* Added **Screenshot ZIP export**, with timestamp-based image filenames for easier attachment to external workflows.
+
+### Word & Evidence Export
+
+* Added configurable **image quality** for Word and Screenshot ZIP exports.
+* Improved export image quality while reducing unnecessary file size.
+* Duplicate evidence images are now automatically reused instead of being stored repeatedly.
+* Word and ZIP exports use optimized evidence images while keeping the original evidence available for preview and other actions.
+
+### Salesforce Reliability
+
+* Added **Alt + X** to open and close the ForcePilot Side Panel.
+* Improved Salesforce record and object detection after navigation and refresh.
+* Fixed recordings using stale Salesforce record context after moving between records.
+* Improved recording reliability when Salesforce pages change, reload, or lose extension state.
+* Improved Autofill and recording recovery across Salesforce navigation and page changes.
+* Improved Salesforce page performance by loading the full recording engine only when needed.
+
+### Launcher
+
+* Added three launcher modes: **Bubble, Edge, and Off**.
+* Added a visual launcher selector in Options.
+* Added a compact **Edge** launcher with a frosted-glass appearance.
+* Improved Bubble launcher sizing and appearance.
+* Launcher preferences are preserved through settings import/export.
+* Added the launcher tooltip showing the **Alt + X** shortcut.
+
+### UI & Experience
+
+* Introduced a more consistent typography, spacing, button, focus, and scrollbar system across ForcePilot.
+* Added support for Dark mode.
+* Refined the Side Panel, Popup, Options, Testing, Evidence, and confirmation dialogs.
+* Reduced unnecessary vertical space across frequently used controls.
+* Added clearer global notifications for recording, testing, export, Autofill, and Salesforce actions.
+* Replaced remaining browser-native confirmation prompts with ForcePilot dialogs.
+* Improved keyboard focus and accessibility throughout the extension.
+
+### Reliability & Recovery
+
+* Improved recording session handling across tabs and browser contexts.
+* Added recovery when the Salesforce content script is reloaded or loses state.
+* Improved screenshot recovery and actionable messages when capture requires browser-level access.
+* Improved handling of stale sessions and extension context changes.
+
+### Packaging & Performance
+
+* Optimized branding images and the DOCX template to reduce extension size.
+* Improved overall runtime performance and reduced unnecessary Salesforce-page work.
+* Removed obsolete legacy launcher and bridge paths.
 
 ## \[1.5.0] — Consolidated Public Release
 
@@ -86,4 +156,3 @@ The 1.3 baseline provided:
 * JSON import/export.
 * Launcher and settings controls.
 * Local browser storage.
-

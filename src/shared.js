@@ -8,8 +8,9 @@
 
 (function(){
   'use strict';
+  if(self.ForcePilotShared?.VERSION==='2.0') return;
   const FP={};
-  FP.VERSION='1.5';
+  FP.VERSION='2.0';
   FP.SCHEMA_VERSION=5;
   FP.STORAGE_KEY='forcepilot.recordings.v1';
   FP.SETTINGS_KEY='forcepilot.settings.v1';
@@ -18,6 +19,7 @@
   const descriptorCache=new WeakMap();
 
   FP.normalizeText=v=>String(v??'').replace(/\s+/g,' ').trim();
+  FP.escapeHtml=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
   FP.normalizeLabel=v=>FP.normalizeText(v).toLowerCase().replace(/[\u200b\u00a0]/g,' ');
   FP.normalizeNumber=v=>{if(v===null||v===undefined)return '';const raw=String(v).trim();if(!raw)return '';const negative=/^\s*\(.*\)\s*$/.test(raw)||/^\s*-/.test(raw)||/^\s*−/.test(raw);const cleaned=raw.replace(/,/g,'').replace(/−/g,'-');const m=cleaned.match(/(?:\d+(?:\.\d+)?|\.\d+)/);if(!m)return '';const n=Number(m[0]);if(!Number.isFinite(n))return '';const out=Number.isInteger(n)?String(Math.trunc(n)):String(n);return negative&&n!==0?`-${out}`:out};
   FP.normalizeBoolean=v=>typeof v==='boolean'?v:['true','1','yes','y','on','checked'].includes(String(v??'').trim().toLowerCase());
@@ -139,7 +141,22 @@
 
   async function getApiVersion(){if(metadataState.version&&Date.now()-metadataState.versionAt<1800000)return metadataState.version;try{const r=await fetch('/services/data/',{credentials:'include',cache:'no-store'});if(r.ok){const arr=await r.json();const nums=Array.isArray(arr)?arr.map(v=>Number(v.version)).filter(Number.isFinite):[];if(nums.length){metadataState.version=Math.max(...nums).toFixed(1);metadataState.versionAt=Date.now();return metadataState.version}}}catch{}return null}
   function normalizeDescribeField(f){if(!f)return null;const type=String(f.type||'').toLowerCase();return{...f,apiName:f.name,label:f.label,dataType:type==='multipicklist'?'multipicklist':type==='datetime'?'datetime':type==='currency'?'currency':type==='percent'?'percent':type,referenceTo:Array.isArray(f.referenceTo)?f.referenceTo:[],picklistValues:Array.isArray(f.picklistValues)?f.picklistValues.filter(x=>x?.active!==false).map(x=>({value:x.value, label:x.label||x.value, validFor:x.validFor})):[]};}
-  FP.loadSalesforceMetadata=async(objectApiName,recordId='')=>{if(!FP.isSalesforceHost()||!objectApiName||objectApiName==='Salesforce')return null;const k=String(objectApiName);const cached=metadataState.objectCache.get(k);if(cached&&Date.now()-cached.at<600000){const fields=new Map(Object.entries(cached.objectInfo?.fields||{}));metadataState.objectFieldMetadata.set(k,fields);metadataState.fieldMetadata=fields;metadataState.objectApiName=objectApiName;metadataState.recordId=recordId;FP.invalidateFieldCaches();return cached.objectInfo}const v=await getApiVersion();const attempts=[];if(v){attempts.push(`/services/data/v${v}/ui-api/object-info/${encodeURIComponent(objectApiName)}`);attempts.push(`/services/data/v${v}/sobjects/${encodeURIComponent(objectApiName)}/describe`);}attempts.push(`/services/data/latest/ui-api/object-info/${encodeURIComponent(objectApiName)}`);attempts.push(`/services/data/latest/sobjects/${encodeURIComponent(objectApiName)}/describe`);for(const url of attempts){try{const r=await fetch(url,{credentials:'include',cache:'no-store'});if(!r.ok)continue;const raw=await r.json();let objectInfo=raw;if(raw?.fields&&typeof raw.fields==='object'&&!Array.isArray(raw.fields)){objectInfo=raw}else if(Array.isArray(raw?.fields)){const fields={};for(const f of raw.fields){const n=normalizeDescribeField(f);if(n?.name)fields[n.name]=n}objectInfo={...raw,apiName:raw.name||objectApiName,label:raw.label||objectApiName,fields}}if(!objectInfo?.fields||typeof objectInfo.fields!=='object')continue;metadataState.objectCache.set(k,{at:Date.now(),objectInfo});const fields=new Map(Object.entries(objectInfo.fields));metadataState.objectFieldMetadata.set(k,fields);metadataState.fieldMetadata=fields;metadataState.objectApiName=objectApiName;metadataState.recordId=recordId;FP.invalidateFieldCaches();return objectInfo}catch{}}return null};
+  function normalizeObjectInfo(raw, objectApiName){
+    if(!raw || typeof raw!=='object') return null;
+    if(raw.fields && typeof raw.fields==='object' && !Array.isArray(raw.fields)){
+      const label=FP.normalizeText(raw.label || objectApiName) || objectApiName;
+      const labelPlural=FP.normalizeText(raw.labelPlural || raw.label || objectApiName) || objectApiName;
+      return {...raw, apiName:raw.apiName || raw.name || objectApiName, label, labelPlural};
+    }
+    if(Array.isArray(raw.fields)){
+      const fields={};
+      for(const f of raw.fields){const n=normalizeDescribeField(f);if(n?.name)fields[n.name]=n;}
+      const label=FP.normalizeText(raw.label || objectApiName) || objectApiName;
+      return {...raw,apiName:raw.name||objectApiName,label,labelPlural:FP.normalizeText(raw.labelPlural || label) || label,fields};
+    }
+    return null;
+  }
+  FP.loadSalesforceMetadata=async(objectApiName,recordId='')=>{if(!FP.isSalesforceHost()||!objectApiName||objectApiName==='Salesforce')return null;const k=String(objectApiName);const cached=metadataState.objectCache.get(k);if(cached&&Date.now()-cached.at<600000){const fields=new Map(Object.entries(cached.objectInfo?.fields||{}));metadataState.objectFieldMetadata.set(k,fields);metadataState.fieldMetadata=fields;metadataState.objectApiName=objectApiName;metadataState.recordId=recordId;FP.invalidateFieldCaches();return cached.objectInfo}const v=await getApiVersion();const attempts=[];if(v){attempts.push(`/services/data/v${v}/ui-api/object-info/${encodeURIComponent(objectApiName)}`);attempts.push(`/services/data/v${v}/sobjects/${encodeURIComponent(objectApiName)}/describe`);}attempts.push(`/services/data/latest/ui-api/object-info/${encodeURIComponent(objectApiName)}`);attempts.push(`/services/data/latest/sobjects/${encodeURIComponent(objectApiName)}/describe`);for(const url of attempts){try{const r=await fetch(url,{credentials:'include',cache:'no-store'});if(!r.ok)continue;const raw=await r.json();const objectInfo=normalizeObjectInfo(raw,objectApiName);if(!objectInfo?.fields||typeof objectInfo.fields!=='object')continue;metadataState.objectCache.set(k,{at:Date.now(),objectInfo});const fields=new Map(Object.entries(objectInfo.fields));metadataState.objectFieldMetadata.set(k,fields);metadataState.fieldMetadata=fields;metadataState.objectApiName=objectApiName;metadataState.recordId=recordId;FP.invalidateFieldCaches();return objectInfo}catch{}}return null};
   FP.getRecordTypeId=async(objectApiName,recordId='')=>{
     const obj=String(objectApiName||''),rec=String(recordId||'');
     if(!obj||obj==='Salesforce')return '';
@@ -474,8 +491,15 @@
     if(values.length>MAX_RECORDINGS||!values.every(x=>x&&typeof x==='object'&&typeof x.id==='string'&&/^[A-Za-z0-9_-]{8,120}$/.test(x.id)&&Array.isArray(x.steps)&&x.steps.length<=MAX_STEPS))throw new Error('Recording data is too large or invalid.');
     return chrome.storage.local.set({[FP.STORAGE_KEY]:sanitized});
   };
-  FP.getSettings=async()=>{const d=await chrome.storage.local.get(FP.SETTINGS_KEY);return{stopOnFailure:false,verifyAfterReplay:true,fillEmptyOnly:true,showOverlay:true,...(d[FP.SETTINGS_KEY]||{})}};
+  FP.getSettings=async()=>{const d=await chrome.storage.local.get(FP.SETTINGS_KEY);const raw=d[FP.SETTINGS_KEY]&&typeof d[FP.SETTINGS_KEY]==='object'?d[FP.SETTINGS_KEY]:{};const defaults={stopOnFailure:false,verifyAfterReplay:true,fillEmptyOnly:true,showOverlay:true,launcherMode:'edge',dateRelativeToToday:true,darkMode:false};for(const k of Object.keys(defaults))if(k in raw)defaults[k]=Boolean(raw[k]);const legacyMode=String(raw.launcherMode||'');if(legacyMode==='current')defaults.launcherMode='bubble';else if(['bubble','edge','off'].includes(legacyMode))defaults.launcherMode=legacyMode;else if(raw.showOverlay===false)defaults.launcherMode='off';return defaults};
   FP.saveSettings=async s=>chrome.storage.local.set({[FP.SETTINGS_KEY]:s});
-  FP.makeRecordingName=c=>c?.objectApiName||'Salesforce recording';
+  FP.makeRecordingName=c=>{
+    const label=FP.normalizeText(c?.objectLabel||c?.objectLabelPlural||'');
+    if(label && !/^salesforce$/i.test(label)) return label.replace(/^\s*[*.•·]+\s*/,'');
+    const api=FP.normalizeText(c?.objectApiName||'');
+    if(!api || /^salesforce$/i.test(api)) return 'Salesforce recording';
+    const objectName=(api.replace(/__c$/i,'').split('__').pop()||api);
+    return objectName.replace(/_/g,' ').replace(/([a-z])([A-Z])/g,'$1 $2').trim() || 'Salesforce recording';
+  };
   self.ForcePilotShared=FP;
 })();

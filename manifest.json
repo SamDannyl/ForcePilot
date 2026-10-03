@@ -1,16 +1,20 @@
 {
   "manifest_version": 3,
   "name": "ForcePilot - Salesforce Record Autofill",
-  "version": "1.5",
+  "version": "2.0",
   "description": "Record Salesforce field values and reuse them to autofill similar records.",
   "incognito": "split",
   "permissions": [
     "storage",
     "scripting",
     "sidePanel",
-    "unlimitedStorage"
+    "unlimitedStorage",
+    "activeTab",
+    "clipboardWrite",
+    "clipboardRead"
   ],
   "host_permissions": [
+    "<all_urls>",
     "https://*.salesforce.com/*",
     "https://*.lightning.force.com/*",
     "https://*.my.salesforce.com/*",
@@ -43,26 +47,10 @@
         "https://*.vf.force.com/*"
       ],
       "js": [
-        "src/shared.js",
-        "src/content.js"
+        "src/launcher.js"
       ],
       "run_at": "document_idle",
       "all_frames": false
-    },
-    {
-      "matches": [
-        "https://*.salesforce.com/*",
-        "https://*.lightning.force.com/*",
-        "https://*.my.salesforce.com/*",
-        "https://*.visualforce.com/*",
-        "https://*.vf.force.com/*"
-      ],
-      "js": [
-        "page_bridge.js"
-      ],
-      "run_at": "document_idle",
-      "all_frames": false,
-      "world": "MAIN"
     }
   ],
   "icons": {
@@ -88,5 +76,13 @@
       ]
     }
   ],
-  "short_name": "ForcePilot"
+  "short_name": "ForcePilot",
+  "commands": {
+    "open-forcepilot": {
+      "suggested_key": {
+        "default": "Alt+X"
+      },
+      "description": "Open ForcePilot on the current Salesforce tab"
+    }
+  }
 }

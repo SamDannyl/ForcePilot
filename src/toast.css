@@ -1,0 +1,78 @@
+/* Shared ForcePilot toast system: compact, icon-free, content-sized, bottom-centered. */
+.fp-toast-stack{
+  position:fixed;
+  left:50%;
+  bottom:12px;
+  z-index:2147483640;
+  width:auto;
+  max-width:calc(100vw - 20px);
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:7px;
+  transform:translateX(-50%);
+  pointer-events:none;
+}
+.fp-toast{
+  display:flex;
+  align-items:center;
+  width:max-content;
+  max-width:min(560px,calc(100vw - 20px));
+  min-height:36px;
+  padding:7px 9px 7px 12px;
+  gap:10px;
+  border:1px solid rgba(148,163,184,.28);
+  border-radius:9px;
+  background:rgba(15,23,42,.95);
+  color:var(--fp-toast-success,#62d391);
+  box-shadow:0 8px 24px rgba(15,23,42,.20),0 1px 2px rgba(15,23,42,.10);
+  backdrop-filter:blur(10px);
+  -webkit-backdrop-filter:blur(10px);
+  opacity:0;
+  transform:translateY(5px);
+  transition:opacity .14s ease,transform .14s ease;
+  pointer-events:auto;
+}
+.fp-toast.is-visible{opacity:1;transform:translateY(0)}
+.fp-toast-message{
+  min-width:0;
+  font-size:12px;
+  line-height:17px;
+  font-weight:600;
+  text-align:center;
+  overflow-wrap:anywhere;
+}
+.fp-toast-success{color:#69d78f}
+.fp-toast-error{color:#ff6f7c}
+.fp-toast-warning{color:#f3c56d}
+.fp-toast-info{color:#7fbfff}
+.fp-toast-close{
+  width:20px;
+  height:20px;
+  flex:0 0 20px;
+  border:0;
+  border-radius:5px;
+  background:transparent;
+  color:currentColor;
+  display:grid;
+  place-items:center;
+  padding:0;
+  font-size:16px;
+  line-height:20px;
+  cursor:pointer;
+  opacity:.76;
+}
+.fp-toast-close:hover{background:rgba(255,255,255,.08);opacity:1}
+.fp-toast-close:focus-visible{outline:2px solid rgba(99,181,255,.65);outline-offset:1px}
+html[data-theme="light"] .fp-toast{
+  background:rgba(255,255,255,.97);
+  border-color:rgba(148,163,184,.42);
+  box-shadow:0 8px 24px rgba(15,23,42,.13),0 1px 2px rgba(15,23,42,.08)
+}
+html[data-theme="light"] .fp-toast-success{color:#2e844a}
+html[data-theme="light"] .fp-toast-error{color:#ba0517}
+html[data-theme="light"] .fp-toast-warning{color:#8a5a00}
+html[data-theme="light"] .fp-toast-info{color:#0b78d0}
+html[data-theme="light"] .fp-toast-close{color:currentColor}
+@media(max-width:390px){.fp-toast-stack{bottom:10px;max-width:calc(100vw - 14px)}.fp-toast{max-width:calc(100vw - 14px)}}
+@media(prefers-reduced-motion:reduce){.fp-toast{transition:none}}

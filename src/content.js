@@ -13,11 +13,11 @@
   const FP=window.ForcePilotShared;
   if(!FP||!FP.isSalesforceHost()) return;
 
-  const BRIDGE_BUILD='1.5';
+  const BRIDGE_BUILD='2.0';
   const state={
-    recording:false,paused:false,replaying:false,recordingId:null,recordingDate:null,dateRelativeToToday:true,steps:[],currentStepIndex:-1,lastContext:null,
+    recording:false,paused:false,replaying:false,recordingId:null,recordingDate:null,dateRelativeToToday:true,darkMode:false,launcherMode:'edge',steps:[],currentStepIndex:-1,lastContext:null,
     baselines:new Map(),lastCommitted:new Map(),touched:new Set(),touchedDescriptors:new Map(),inputTimers:new Map(),reconcileTimer:0,
-    replayInitial:new Map(),replayFillOnly:true,ignoreEvents:false,overlay:null,observer:null,bridgeToken:id(),
+    replayInitial:new Map(),replayFillOnly:true,ignoreEvents:false,overlay:null,observer:null,captureHidden:null,
     runId:0,metadataPromise:null,targetCache:new Map(),appendOnly:false,appendExistingKeys:new Set(),pendingRecording:null
   };
   function id(){return crypto.randomUUID?.()||`fp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`}
@@ -39,71 +39,118 @@
     for(const k of keys)if(k&&!out.includes(k))out.push(k);
     return out;
   }
-  const esc=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 
   function inferObjectLabel(objectApiName){
-    const api=String(objectApiName||'');
-    const selectors=['one-app-nav-bar-item-root[aria-current="true"]','a[aria-current="page"]','button[aria-current="page"]','lightning-breadcrumbs [aria-current="page"]','lightning-breadcrumb a'];
-    for(const sel of selectors){try{const el=document.querySelector(sel);const t=FP.normalizeText(el?.textContent||'');if(t&&t.length<80&&!/^home$/i.test(t))return t}catch{}}
-    try{const title=FP.normalizeText(document.title);const m=title.match(/\|\s*([^|]+)$/);if(m&&m[1]&&!/salesforce|edit|new record/i.test(m[1]))return m[1]}catch{}
-    const core=api.replace(/^.*__/,'').replace(/__c$/i,'').replace(/^APTS_/i,'').replace(/_/g,' ').trim();
-    return core || api;
+    const api=String(objectApiName||'').trim();
+    if(!api || api==='Salesforce') return '';
+    const objectName=(api.replace(/__c$/i,'').split('__').pop()||api);
+    return objectName.replace(/_/g,' ').replace(/([a-z])([A-Z])/g,'$1 $2').trim();
+  }
+
+  function candidateObjectApiNames(){
+    const out=[];
+    const add=v=>{const value=String(v||'').trim();if(value&&!out.includes(value))out.push(value);};
+    const route=location.pathname;
+    // Salesforce is an SPA, so DOM dataset values can lag behind the URL after
+    // navigation. Always prefer the current route because it identifies the
+    // record/object the user is actually looking at.
+    const rec=route.match(/\/lightning\/r\/([^/]+)\/([A-Za-z0-9]{15,18})(?:\/|$)/i);
+    const obj=route.match(/\/lightning\/o\/([^/]+)(?:\/|$)/i);
+    add(rec?.[1]);
+    add(obj?.[1]);
+    add(document.documentElement.dataset.sfObject);
+    add(document.querySelector('[data-sf-object]')?.getAttribute('data-sf-object'));
+    const targets=[...document.querySelectorAll('[data-target-selection-name^="sfdc:Record."]')];
+    for(const el of targets.slice(0,12)){
+      const raw=String(el.getAttribute('data-target-selection-name')||'');
+      const m=raw.match(/^sfdc:Record\.([^.]*)/i);
+      if(m) add(m[1]);
+    }
+    return out;
   }
 
   function detectContext(){
     const path=location.pathname;
-    const rec=path.match(/\/lightning\/r\/([^/]+)\/([A-Za-z0-9]{15,18})(?:\/|$)/i),obj=path.match(/\/lightning\/o\/([^/]+)(?:\/|$)/i);
-    const objectApiName=document.documentElement.dataset.sfObject||document.querySelector('[data-sf-object]')?.getAttribute('data-sf-object')||rec?.[1]||obj?.[1]||'';
-    const objectLabel=document.documentElement.dataset.sfObjectLabel||document.querySelector('[data-sf-object-label]')?.getAttribute('data-sf-object-label')||inferObjectLabel(objectApiName)||objectApiName||'Salesforce';
-    const recordId=document.documentElement.dataset.sfRecordId||rec?.[2]||'';
+    const rec=path.match(/\/lightning\/r\/([^/]+)\/([A-Za-z0-9]{15,18})(?:\/|$)/i);
+    const obj=path.match(/\/lightning\/o\/([^/]+)(?:\/|$)/i);
+    const routeObjectApiName=String(rec?.[1]||obj?.[1]||'').trim();
+    const candidates=candidateObjectApiNames();
+    const objectApiName=routeObjectApiName||candidates[0]||'';
+    // Never reuse the previous object's label. On Lightning SPA navigation that
+    // can leave an Opportunity label attached to an Agreement URL.
+    const explicitObjectLabel=routeObjectApiName
+      ? ''
+      : (document.documentElement.dataset.sfObjectLabel||document.querySelector('[data-sf-object-label]')?.getAttribute('data-sf-object-label')||'');
+    const objectLabel=String(explicitObjectLabel||inferObjectLabel(objectApiName)||objectApiName||'Salesforce').replace(/^\s*[*.•·]+\s*/,'').trim();
+    const recordId=rec?.[2]||document.documentElement.dataset.sfRecordId||'';
     const mode=/\/new(?:\/|$)|\/edit(?:\/|$)|\/e\//i.test(path)?'edit':recordId?'view':'new';
     return{objectApiName:objectApiName||'Salesforce',objectLabel,recordId,stage:'',mode,origin:location.origin,url:location.href};
   }
 
-  // Floating ForcePilot launcher. Fixed bottom-right, no drag, no expanded hover state.
-  const LAUNCHER_SIZE=48;
-  const LAUNCHER_RIGHT=18;
-  const LAUNCHER_BOTTOM_GAP=28;
 
-  function ensureOverlay(){
-    if(state.overlay)return;
-    const root=document.createElement('button');
-    root.id='forcepilot-root';
-    root.type='button';
-    root.setAttribute('aria-label','Open ForcePilot');
+  // ForcePilot launcher. Three persisted modes: bubble, edge, off.
+  // Bubble is the legacy/current launcher, retained under its new user-facing name.
+  const LAUNCHER={bubble:{size:48,right:18,bottom:28},edge:{width:20,height:40,right:0,bottom:48}};
+
+  function launcherMarkup(mode){
+    if(mode==='edge'){
+      return '<span class="fp-edge-chevron" aria-hidden="true"><svg viewBox="0 0 20 20" focusable="false"><path d="M12.5 4.5 7 10l5.5 5.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>';
+    }
+    return '<span class="fp-beacon-logo"><img src="'+chrome.runtime.getURL('branding/forcepilot-icon.png')+'" alt=""/><span class="fp-status-badge" aria-hidden="true"></span></span>';
+  }
+  function applyLauncherMode(mode){
+    const root=state.overlay;if(!root)return;
+    const requested=String(mode||'');
+    const next=requested==='current'?'bubble':(['edge','bubble','off'].includes(requested)?requested:'edge');
+    root.dataset.mode=next;
+    root.innerHTML=next==='edge'?launcherMarkup('edge'):launcherMarkup(next);
     root.title='Open ForcePilot';
-    root.innerHTML='<span class="fp-beacon-logo"><img src="'+chrome.runtime.getURL('branding/forcepilot-icon.png')+'" alt=""/><span class="fp-status-badge" aria-hidden="true"></span></span>';
-    const style=document.createElement('style');
-    style.textContent=`
-#forcepilot-root{position:fixed!important;right:${LAUNCHER_RIGHT}px!important;left:auto!important;top:auto!important;bottom:${LAUNCHER_BOTTOM_GAP}px!important;width:${LAUNCHER_SIZE}px!important;height:${LAUNCHER_SIZE}px!important;box-sizing:border-box!important;margin:0!important;padding:2px!important;z-index:2147483646!important;border:0!important;border-radius:0!important;background:transparent!important;display:grid!important;place-items:center!important;overflow:visible!important;pointer-events:auto!important;cursor:pointer!important;user-select:none!important;-webkit-user-select:none!important;-webkit-user-drag:none!important;appearance:none!important;outline:none!important;transition:transform .14s ease,filter .14s ease!important}
-#forcepilot-root:hover{transform:translateY(-1px) scale(1.03)!important;filter:drop-shadow(0 3px 6px rgba(15,35,60,.18))!important}
-#forcepilot-root:focus-visible{outline:2px solid rgba(11,120,208,.34)!important;outline-offset:3px!important;border-radius:8px!important}
-#forcepilot-root .fp-beacon-logo{position:relative;width:42px;height:42px;display:grid;place-items:center;pointer-events:none}
-#forcepilot-root .fp-beacon-logo img{width:42px;height:42px;object-fit:contain;display:block;filter:drop-shadow(0 2px 5px rgba(15,35,60,.16))}
-#forcepilot-root .fp-status-badge{position:absolute;right:-1px;bottom:-1px;width:7px;height:7px;border-radius:50%;background:#2e844a;border:2px solid rgba(255,255,255,.96);box-sizing:content-box;box-shadow:0 1px 3px rgba(15,35,60,.16);pointer-events:none}
-#forcepilot-root.recording .fp-status-badge,#forcepilot-root.replaying .fp-status-badge{background:#0b78d0}
-#forcepilot-root.recording .fp-status-badge{animation:fp-status-pulse 1.4s ease-in-out infinite}
-@keyframes fp-status-pulse{0%,100%{box-shadow:0 1px 3px rgba(15,35,60,.16),0 0 0 0 rgba(11,120,208,0)}50%{box-shadow:0 1px 3px rgba(15,35,60,.16),0 0 0 3px rgba(11,120,208,.10)}}
-@media(max-width:500px){#forcepilot-root{right:12px!important}}
-@media(prefers-reduced-motion:reduce){#forcepilot-root{transition:none!important}.fp-status-badge{animation:none!important}}
-`;
-    root.addEventListener('click', e => {
-      e.preventDefault();
-      e.stopPropagation();
-      root.disabled = true;
-      safeRuntimeSendMessage({type:'OPEN_SIDE_PANEL'}).finally(() => { root.disabled = false; });
-    });
-    document.documentElement.append(style,root);
-    state.overlay=root;
+    root.setAttribute('aria-label','Open ForcePilot');
+    root.hidden=next==='off';
     updatePresence();
   }
-  function updatePresence(){
-    const b=state.overlay;if(!b)return;
-    b.classList.toggle('recording',state.recording);
-    b.classList.toggle('replaying',state.replaying);
-    b.classList.toggle('paused',state.paused);
-    b.setAttribute('aria-label',state.recording?(state.paused?`Recording paused, ${state.steps.length} fields`:`Recording ${state.steps.length} fields`):state.replaying?`Autofill, field ${state.currentStepIndex+1}`:'Open ForcePilot');
+  function ensureOverlay(){
+    if(state.overlay)return;
+    const existing=document.getElementById('forcepilot-root');
+    if(existing){
+      state.overlay=existing;
+      if(!existing.__forcePilotLauncherBound){
+        existing.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();existing.disabled=true;safeRuntimeSendMessage({type:'OPEN_SIDE_PANEL'}).finally(()=>{existing.disabled=false;});});
+        existing.__forcePilotLauncherBound=true;
+      }
+      applyLauncherMode(state.launcherMode||'edge');
+      return;
+    }
+    const root=document.createElement('button');
+    root.id='forcepilot-root';root.type='button';root.setAttribute('aria-label','Open ForcePilot');root.title='Open ForcePilot';
+    const style=document.getElementById('forcepilot-launcher-style')||document.createElement('style');
+    style.id='forcepilot-launcher-style';
+    style.textContent=`
+#forcepilot-root{--fp-overlay-accent:#0b78d0;--fp-overlay-focus:rgba(11,120,208,.32);--fp-overlay-shadow:rgba(15,35,60,.18);--fp-overlay-surface:rgba(255,255,255,.96);--fp-overlay-border:rgba(152,162,179,.55);--fp-overlay-text:#344054;--fp-overlay-badge-ring:rgba(255,255,255,.96);--fp-overlay-badge:#2e844a;position:fixed!important;z-index:2147483646!important;box-sizing:border-box!important;margin:0!important;display:grid!important;place-items:center!important;overflow:visible!important;pointer-events:auto!important;cursor:pointer!important;user-select:none!important;-webkit-user-select:none!important;-webkit-user-drag:none!important;appearance:none!important;outline:none!important;font:inherit!important;color:var(--fp-overlay-text)!important;background:transparent!important;border:0!important;transition:width .14s ease,height .14s ease,transform .14s ease,background .14s ease,box-shadow .14s ease,border-color .14s ease,filter .14s ease!important}
+#forcepilot-root[data-theme="dark"]{--fp-overlay-accent:#69b7ff;--fp-overlay-focus:rgba(105,183,255,.48);--fp-overlay-shadow:rgba(0,0,0,.24);--fp-overlay-surface:rgba(34,40,49,.96);--fp-overlay-border:rgba(255,255,255,.14);--fp-overlay-text:#d9e2ee;--fp-overlay-badge-ring:rgba(34,40,49,.96);--fp-overlay-badge:#4cc46b}
+#forcepilot-root[data-mode="bubble"]{right:18px!important;bottom:28px!important;width:48px!important;height:48px!important;padding:2px!important;border-radius:0!important;background:transparent!important}
+#forcepilot-root[data-mode="edge"]{right:0!important;top:auto!important;bottom:48px!important;width:18px!important;height:42px!important;padding:0!important;border:1px solid rgba(255,255,255,.18)!important;border-right:0!important;border-radius:7px 0 0 7px!important;background:rgba(255,255,255,.25)!important;backdrop-filter:blur(16px) saturate(150%)!important;-webkit-backdrop-filter:blur(16px) saturate(150%)!important;box-shadow:-1px 4px 14px rgba(18,35,55,.10)!important;transform:none!important;opacity:.88!important;color:rgba(35,48,64,.70)!important;transition:width .16s ease,background .16s ease,border-color .16s ease,box-shadow .16s ease,opacity .16s ease,color .16s ease!important}
+#forcepilot-root[data-theme="dark"][data-mode="edge"]{background:rgba(23,29,37,.34)!important;border-color:rgba(255,255,255,.14)!important;box-shadow:-1px 4px 14px rgba(0,0,0,.22)!important;color:rgba(231,238,247,.76)!important}
+#forcepilot-root[data-theme="dark"][data-mode="edge"]:hover,#forcepilot-root[data-theme="dark"][data-mode="edge"]:focus-visible{background:rgba(34,40,49,.62)!important;border-color:rgba(255,255,255,.18)!important;}
+#forcepilot-root[data-mode="edge"]:hover,#forcepilot-root[data-mode="edge"]:focus-visible{width:21px!important;opacity:1!important;background:rgba(255,255,255,.55)!important;border-color:rgba(152,162,179,.48)!important;box-shadow:-2px 5px 14px var(--fp-overlay-shadow)!important}
+#forcepilot-root[data-mode="edge"]:active{width:20px!important}
+#forcepilot-root[data-mode="bubble"]:hover{transform:translateY(-1px) scale(1.03)!important;filter:drop-shadow(0 3px 6px var(--fp-overlay-shadow))!important}
+#forcepilot-root:focus-visible{outline:2px solid var(--fp-overlay-focus)!important;outline-offset:3px!important}
+#forcepilot-root .fp-beacon-logo{position:relative;width:42px;height:42px;display:grid;place-items:center;pointer-events:none}
+#forcepilot-root .fp-beacon-logo img{width:42px;height:42px;object-fit:contain;display:block;filter:drop-shadow(0 2px 5px var(--fp-overlay-shadow))}
+#forcepilot-root .fp-status-badge{position:absolute;right:-1px;bottom:-1px;width:6px;height:6px;border-radius:50%;background:var(--fp-overlay-badge);border:2px solid var(--fp-overlay-badge-ring);box-sizing:content-box;box-shadow:0 1px 3px var(--fp-overlay-shadow);pointer-events:none}
+#forcepilot-root.recording .fp-status-badge,#forcepilot-root.replaying .fp-status-badge{background:var(--fp-overlay-accent)}
+#forcepilot-root.recording .fp-status-badge{animation:fp-status-pulse 1.4s ease-in-out infinite}
+#forcepilot-root .fp-edge-chevron{width:18px;height:18px;display:grid;place-items:center;color:var(--fp-overlay-text);pointer-events:none}
+#forcepilot-root .fp-edge-chevron svg{width:16px;height:16px;display:block}
+@keyframes fp-status-pulse{0%,100%{box-shadow:0 1px 3px var(--fp-overlay-shadow),0 0 0 0 rgba(99,181,255,0)}50%{box-shadow:0 1px 3px var(--fp-overlay-shadow),0 0 0 3px rgba(99,181,255,.14)}}
+@media(max-width:500px){#forcepilot-root[data-mode="bubble"]{right:12px!important}#forcepilot-root[data-mode="edge"]{bottom:44px!important}}
+@media(prefers-reduced-motion:reduce){#forcepilot-root{transition:none!important}.fp-status-badge{animation:none!important}}
+`;
+    root.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();root.disabled=true;safeRuntimeSendMessage({type:'OPEN_SIDE_PANEL'}).finally(()=>{root.disabled=false;});});
+    if(!style.isConnected)document.documentElement.append(style);document.documentElement.append(root);state.overlay=root;root.__forcePilotLauncherBound=true;applyLauncherMode(state.launcherMode||'bubble');
   }
+  function updatePresence(){const b=state.overlay;if(!b)return;b.dataset.theme=state.darkMode?'dark':'light';b.classList.toggle('recording',state.recording);b.classList.toggle('replaying',state.replaying);b.classList.toggle('paused',state.paused);b.setAttribute('aria-label',state.recording?(state.paused?`Recording paused, ${state.steps.length} fields`:`Recording ${state.steps.length} fields`):state.replaying?`Autofill, field ${state.currentStepIndex+1}`:'Open ForcePilot');}
   function safeRuntimeSendMessage(message){
     try{if(!chrome?.runtime?.id)return Promise.resolve(null);const r=chrome.runtime.sendMessage(message);return r?.catch?.(()=>null)||Promise.resolve(r);}catch{return Promise.resolve(null);}
   }
@@ -330,16 +377,15 @@
       },delay));
     }
   }
-  function reconcile(){if(!state.recording||state.paused||state.replaying)return;for(const d of state.touchedDescriptors.values())commitDescriptor(d,'reconcile')}
+  function reconcile(){if(!state.recording||state.paused||state.replaying||state.touchedDescriptors.size===0)return;const started=performance.now();for(const d of state.touchedDescriptors.values())commitDescriptor(d,'reconcile');const elapsed=performance.now()-started;if(elapsed>50)console.debug('[ForcePilot] reconcile took',Math.round(elapsed),'ms for',state.touchedDescriptors.size,'fields')}
   function installListeners(){
     if(state.observer)return;
     for(const type of ['input','change','blur','click','pointerup'])document.addEventListener(type,onInteraction,true);
     state.reconcileTimer=setInterval(reconcile,1200);
-    let cacheInvalidationQueued=false;
+    let cacheInvalidationTimer=0;
     state.observer=new MutationObserver(()=>{
-      if(cacheInvalidationQueued)return;
-      cacheInvalidationQueued=true;
-      queueMicrotask(()=>{cacheInvalidationQueued=false;if(state.recording)FP.invalidateFieldCaches();});
+      if(cacheInvalidationTimer)return;
+      cacheInvalidationTimer=setTimeout(()=>{cacheInvalidationTimer=0;if(state.recording)FP.invalidateFieldCaches();},80);
     });
     state.observer.observe(document.body||document.documentElement,{subtree:true,childList:true});
   }
@@ -355,8 +401,8 @@
       const timer=setTimeout(()=>finish({ok:false,reason:'Page bridge timeout'}),1800);
       function onResult(e){if(e.detail?.requestId!==requestId)return;clearTimeout(timer);finish(e.detail?.result||{ok:false})}
       window.addEventListener('forcepilot-page-result',onResult);
-      window.dispatchEvent(new CustomEvent('forcepilot-bridge-init',{detail:{version:BRIDGE_BUILD,requestId,token:nonce,id:targetId,action,expiresAt:Date.now()+2500}}));
-      window.dispatchEvent(new CustomEvent('forcepilot-page-action',{detail:{id:targetId,action,value,requestId,token:nonce,version:BRIDGE_BUILD}}));
+      window.dispatchEvent(new CustomEvent('forcepilot-bridge-init',{detail:{version:BRIDGE_BUILD,requestId,nonce:nonce,id:targetId,action,expiresAt:Date.now()+2500}}));
+      window.dispatchEvent(new CustomEvent('forcepilot-page-action',{detail:{id:targetId,action,value,requestId,nonce:nonce,version:BRIDGE_BUILD}}));
     });
   }
 
@@ -731,7 +777,10 @@
   async function startRecording(opts={}){
     if(!FP.isSalesforceHost()){return{ok:false,code:'SALESFORCE_ONLY'}}
     const appendRecording=opts?.appendRecording||null;
+    // Record must always snapshot the object from the current Salesforce page.
+    // This prevents an SPA-navigated Agreement from inheriting the prior Opportunity.
     const currentContext=detectContext();
+    state.lastContext={...currentContext};
     if(appendRecording?.context?.objectApiName&&currentContext.objectApiName&&appendRecording.context.objectApiName!==currentContext.objectApiName){
       
       return{ok:false,code:'RECORDING_OBJECT_MISMATCH',message:`This recording is for ${appendRecording.context.objectApiName}. Open a matching Salesforce record first.`};
@@ -966,6 +1015,10 @@
     for(const step of Array.isArray(recording?.steps)?recording.steps:[]){if(!step?.target?.apiName||!['picklist','multi-picklist'].includes(String(step.target.kind||'').toLowerCase()))continue;if(Array.isArray(step.target.options)&&step.target.options.length)continue;const objectApi=step.target.objectApiName||replayContext.objectApiName||'';if(!objectApi||objectApi==='Salesforce')continue;const recordId=objectApi===replayContext.objectApiName?replayContext.recordId:'';const info=await FP.loadSalesforceMetadata(objectApi,recordId).catch(()=>null);const rt=await FP.getRecordTypeId?.(objectApi,recordId)||info?.defaultRecordTypeId||'012000000000000AAA';const opts=await FP.loadFieldPicklistValues?.(objectApi,rt,step.target.apiName)||[];if(opts.length)step.target.options=opts.map(o=>({value:o.value,displayValue:o.displayValue||o.value}));}}
 
   async function preflightRecording(recording){
+    // Preflight is advisory only. It must never become a global execution gate because
+    // Salesforce Lightning fields can be temporarily absent, disabled, or read-only
+    // while the page is still rendering. executeStep() owns the authoritative per-field
+    // recovery/validation path.
     const report={ok:true,checked:0,missing:[],invalid:[],warnings:[],objects:[]};
     const steps=Array.isArray(recording?.steps)?recording.steps.filter(s=>s?.enabled!==false):[];
     report.objects=[...new Set(steps.map(s=>s?.target?.objectApiName).filter(Boolean))];
@@ -973,18 +1026,23 @@
       const index=Number.isFinite(Number(step?.sequence))?Number(step.sequence)-1:report.checked;
       report.checked++;
       const t=step?.target||{},d=resolveTarget(t),label=t.label||t.apiName||t.name||'Field';
-      if(!d){report.missing.push({index,label,target:t});continue;}
+      if(!d){
+        report.missing.push({index,label,target:t,reason:'Target was not available during the advisory preflight snapshot; execution will retry resolution.'});
+        continue;
+      }
       const expected=String(t.kind||'').toLowerCase(),actual=String(d.kind||'').toLowerCase();
       // Kind mismatches are recoverable. The live Salesforce field component is the
       // source of truth; executeStep() will repair the action/value semantics to match it.
       if(expected&&actual&&expected!==actual){
         report.warnings.push({index,label,recordedKind:expected,currentKind:actual,reason:`Recorded as ${expected} but current control is ${actual}; replay will use the current control type.`,repaired:true});
       }
-      if(d.readOnly && !['picklist','multi-picklist'].includes(String(d.kind||'')))report.invalid.push({index,label,reason:'Field is read-only.'});
-      else if(d.disabled && !['picklist','multi-picklist'].includes(String(d.kind||'')))report.invalid.push({index,label,reason:'Field is disabled.'});
-      else if(d.disabled||d.readOnly)report.warnings.push({index,label,reason:'Field is temporarily unavailable; replay will wait for Salesforce to enable it.',repaired:true});
+      if(d.readOnly||d.disabled){
+        report.warnings.push({index,label,reason:'Field was temporarily unavailable during the advisory snapshot; replay will wait for Salesforce to make it interactive.',repaired:true});
+      }
     }
-    report.ok=!report.missing.length&&!report.invalid.length;
+    // Intentionally always true: advisory findings belong in diagnostics, while field
+    // execution and the Stop on first failure setting decide what actually stops a run.
+    report.ok=true;
     return report;
   }
 
@@ -998,18 +1056,43 @@
     }
     return !!d.disabled;
   }
+  async function resolveTargetWithRetry(target,timeout=1800,interval=120){
+    const deadline=Date.now()+timeout;
+    let first=true;
+    while(Date.now()<deadline){
+      if(!first){
+        FP.invalidateFieldCaches();
+        for(const key of targetCacheKeys(target))state.targetCache.delete(key);
+      }
+      first=false;
+      const d=resolveTarget(target);
+      if(d)return d;
+      await wait(Math.min(interval,Math.max(20,deadline-Date.now())));
+    }
+    FP.invalidateFieldCaches();
+    for(const key of targetCacheKeys(target))state.targetCache.delete(key);
+    return resolveTarget(target);
+  }
   async function waitForEditableDescriptor(step,d,timeout=3500){
     const deadline=Date.now()+timeout;let current=d;
     while(Date.now()<deadline){
-      current=FP.refreshFieldDescriptor?.(current.host)||current||d;
-      if(!explicitReadonly(current)&&!liveInteractiveDisabled(current))return current;
+      if(current&&current.host?.isConnected===false&&current.element?.isConnected===false){
+        const remaining=Math.max(300,deadline-Date.now());
+        current=await resolveTargetWithRetry(step.target,Math.min(1200,remaining),120);
+        if(!current)return null;
+      }else{
+        current=FP.refreshFieldDescriptor?.(current?.host)||current||d;
+      }
+      if(current&&!explicitReadonly(current)&&!liveInteractiveDisabled(current))return current;
       await wait(120);
     }
     return current;
   }
   async function executeStep(step,opts={}){
-    let d=resolveTarget(step.target);if(!d)return{ok:false,status:'failed',code:'TARGET_NOT_FOUND',message:`${step.target.label||step.target.apiName||'Field'} could not be found.`};
+    let d=await resolveTargetWithRetry(step.target);
+    if(!d)return{ok:false,status:'failed',code:'TARGET_NOT_FOUND',message:`${step.target.label||step.target.apiName||'Field'} could not be found after retrying.`};
     d=await waitForEditableDescriptor(step,d);
+    if(!d)return{ok:false,status:'failed',code:'TARGET_NOT_FOUND',message:`${step.target.label||step.target.apiName||'Field'} could not be found after Salesforce rerendered the field.`};
     if(explicitReadonly(d)||liveInteractiveDisabled(d))return{ok:false,status:'failed',code:'FIELD_NOT_EDITABLE',message:`${d.label} is not editable.`};
     const effectiveStep=repairStepForDescriptor(step,d);
     const before=valueFor(d),fillOnlyBlank=opts.fillOnlyBlank!==undefined?!!opts.fillOnlyBlank:state.replayFillOnly;
@@ -1024,7 +1107,7 @@
       else{const el=d.element||FP.controlForField(d.host);if(!el)return{ok:false,reason:'Field control not found'};result={ok:setNative(el,valueForStep(d,effectiveStep))};}
     }finally{state.ignoreEvents=false}
     if(!result?.ok)return{ok:false,status:'failed',code:'EXECUTION_FAILED',message:result?.reason||`Could not fill ${d.label}.`};
-    await wait(opts.fastOverwrite?(d.kind==='multi-picklist'?220:55):(d.kind==='multi-picklist'?420:180));const fresh=FP.refreshFieldDescriptor?.(d.host)||d;const actual=valueFor(fresh);const settings=opts.settings||{verifyAfterReplay:true};let verified=true;if(settings.verifyAfterReplay){if(fresh.kind==='multi-picklist')verified=multiPicklistMatches(fresh,effectiveStep.value);else if(fresh.kind==='picklist')verified=pickMatches(fresh,{value:effectiveStep.value,displayValue:effectiveStep.meta?.selectedDisplayValue||''});else if(fresh.kind==='lookup')verified=lookupSelectionEvidence(fresh,effectiveStep.value?.recordId||effectiveStep.meta?.lookupRecordId||effectiveStep.target?.referenceId||'',effectiveStep.value?.displayValue||effectiveStep.meta?.lookupDisplayValue||'');else verified=FP.valuesEqual(fresh,actual,valueForStep(fresh,effectiveStep));}const verificationPending=!!result?.verificationSoft&&!verified;if(settings.verifyAfterReplay&&!verified&&!verificationPending)return{ok:false,status:'failed',code:'VERIFICATION_FAILED',message:`${fresh.label} did not show the recorded value.`};return{ok:true,status:'filled',verified:!!verified,verification:verified?'verified':(verificationPending?'pending':'disabled'),verificationSoft:!!result?.verificationSoft,verificationPending};
+    await wait(opts.fastOverwrite?(d.kind==='multi-picklist'?220:55):(d.kind==='multi-picklist'?420:180));const fresh=FP.refreshFieldDescriptor?.(d.host)||d;const actual=valueFor(fresh);const settings=opts.settings||{verifyAfterReplay:true};let verified=true;if(settings.verifyAfterReplay){if(fresh.kind==='multi-picklist')verified=multiPicklistMatches(fresh,effectiveStep.value);else if(fresh.kind==='picklist')verified=pickMatches(fresh,{value:effectiveStep.value,displayValue:effectiveStep.meta?.selectedDisplayValue||''});else if(fresh.kind==='lookup')verified=lookupSelectionEvidence(fresh,effectiveStep.value?.recordId||effectiveStep.meta?.lookupRecordId||effectiveStep.target?.referenceId||'',effectiveStep.value?.displayValue||effectiveStep.meta?.lookupDisplayValue||'');else verified=FP.valuesEqual(fresh,actual,valueForStep(fresh,effectiveStep));}const verificationPending=!!result?.verificationSoft&&!verified;if(settings.verifyAfterReplay&&!verified&&!verificationPending)return{ok:false,status:'failed',code:'VERIFICATION_FAILED',message:`${fresh.label} did not show the recorded value.`};return{ok:true,status:'filled',verified:!!verified,verification:verified?'verified':(verificationPending?'pending':'disabled'),verificationSoft:!!result?.verificationSoft,verificationPending,selected:result?.selected||''};
   }
   function selectedTruth(v){return!!v}
 
@@ -1036,18 +1119,37 @@
     recording={...recording,context:{...(recording?.context||{}),objectApiName:recording?.context?.objectApiName||replayContext.objectApiName,objectLabel:recording?.context?.objectLabel||replayContext.objectLabel},steps:normalizedSteps};
     const recordingObject=String(recording.context?.objectApiName||'');if(recordingObject&&recordingObject!=='Salesforce'&&replayContext.objectApiName&&replayContext.objectApiName!=='Salesforce'&&recordingObject.toLowerCase()!==String(replayContext.objectApiName).toLowerCase())return{ok:false,code:'RECORDING_OBJECT_MISMATCH',message:`This recording is for ${recordingObject}. Open a matching Salesforce record first.`,executed:[]};
     state.replaying=true;state.recording=false;state.targetCache.clear();state.currentStepIndex=-1;state.runId++;updatePresence();
-    const replayObjects=new Set([detectContext().objectApiName,...(recording.steps||[]).map(s=>s?.target?.objectApiName).filter(Boolean)].filter(x=>x&&x!=='Salesforce'));
-    await Promise.all([...replayObjects].map(obj=>FP.loadSalesforceMetadata(obj,obj===replayContext.objectApiName?replayContext.recordId:'').catch(()=>null)));
-    await hydrateReplayPicklists(recording,replayContext);
-    FP.invalidateFieldCaches();
-    const preflight=await preflightRecording(recording);
-    if(!preflight.ok){state.replaying=false;updatePresence();return{ok:false,code:'PREFLIGHT_FAILED',message:`Autofill preflight found ${preflight.missing.length+preflight.invalid.length} issue(s).`,preflight,executed:[],fillOnlyBlank:false};}
-    const settings=await FP.getSettings();state.replayFillOnly=opts.fillOnlyBlank!==undefined?!!opts.fillOnlyBlank:settings.fillEmptyOnly!==false;state.replayInitial=initialEmptyMap(recording);
-    const indexes=[];const only=Array.isArray(opts.onlyIndexes)?new Set(opts.onlyIndexes.map(Number)):null;const start=Math.max(0,Number(opts.startIndex||0));
-    for(let i=0;i<(recording.steps||[]).length;i++){if(i<start)continue;if(only&&!only.has(i))continue;if(recording.steps[i].enabled===false)continue;indexes.push(i)}
     const executed=[];
-    for(const i of indexes){state.currentStepIndex=i;updatePresence();const r=await executeStep(recording.steps[i],{fillOnlyBlank:state.replayFillOnly,settings,fastOverwrite:!!opts.fastOverwrite});executed.push({index:i,step:recording.steps[i],result:r});if(!r.ok&&settings.stopOnFailure)break}
-    state.replaying=false;updatePresence();return{ok:!executed.some(x=>!x.result.ok),failedAt:executed.find(x=>!x.result.ok)?.index,executed,fillOnlyBlank:state.replayFillOnly};
+    let preflight={ok:true,checked:0,missing:[],invalid:[],warnings:[],objects:[]};
+    try{
+      const replayObjects=new Set([detectContext().objectApiName,...(recording.steps||[]).map(s=>s?.target?.objectApiName).filter(Boolean)].filter(x=>x&&x!=='Salesforce'));
+      await Promise.all([...replayObjects].map(obj=>FP.loadSalesforceMetadata(obj,obj===replayContext.objectApiName?replayContext.recordId:'').catch(()=>null)));
+      await hydrateReplayPicklists(recording,replayContext);
+      FP.invalidateFieldCaches();
+      preflight=await preflightRecording(recording);
+      const settings=await FP.getSettings();state.replayFillOnly=opts.fillOnlyBlank!==undefined?!!opts.fillOnlyBlank:settings.fillEmptyOnly!==false;state.replayInitial=initialEmptyMap(recording);
+      const indexes=[];const only=Array.isArray(opts.onlyIndexes)?new Set(opts.onlyIndexes.map(Number)):null;const start=Math.max(0,Number(opts.startIndex||0));
+      for(let i=0;i<(recording.steps||[]).length;i++){if(i<start)continue;if(only&&!only.has(i))continue;if(recording.steps[i].enabled===false)continue;indexes.push(i)}
+      for(const i of indexes){
+        state.currentStepIndex=i;
+        updatePresence();
+        let r;
+        try{
+          r=await executeStep(recording.steps[i],{fillOnlyBlank:state.replayFillOnly,settings,fastOverwrite:!!opts.fastOverwrite});
+        }catch(e){
+          r={ok:false,status:'failed',code:'STEP_EXCEPTION',message:e?.message||'Unexpected error while filling this field.'};
+        }
+        executed.push({index:i,step:recording.steps[i],result:r});
+        if(!r.ok&&settings.stopOnFailure)break;
+      }
+      return{ok:!executed.some(x=>!x.result.ok),failedAt:executed.find(x=>!x.result.ok)?.index,executed,fillOnlyBlank:state.replayFillOnly,preflight};
+    }catch(e){
+      return{ok:false,code:'AUTOFILL_RUNTIME_ERROR',message:e?.message||'Autofill could not be completed.',preflight,executed,fillOnlyBlank:state.replayFillOnly};
+    }finally{
+      state.replaying=false;
+      state.currentStepIndex=-1;
+      updatePresence();
+    }
   }
   async function removeRecordingStep(index){
     if(!state.recording)return{ok:false,code:'NOT_RECORDING',message:'Recording is not active.'};
@@ -1060,6 +1162,13 @@
     updatePresence();
     return{ok:true,steps:state.steps};
   }
+  function syncHighlightTheme(){
+    const overlay=document.getElementById('forcepilot-focus-highlight-overlay');
+    if(!overlay)return;
+    overlay.style.setProperty('--fp-highlight-color',state.darkMode?'#63b5ff':'#1976d2');
+    overlay.style.setProperty('--fp-highlight-shadow',state.darkMode?'rgba(99,181,255,.24)':'rgba(25,118,210,.18)');
+  }
+
   function highlightFieldTarget(d){
     if(!d)return;
     const raw=d.element||FP.controlForField(d.host)||d.host;
@@ -1075,7 +1184,8 @@
       const overlay=document.createElement('div');
       overlay.id=overlayId;
       overlay.setAttribute('aria-hidden','true');
-      overlay.style.cssText='position:fixed;pointer-events:none;z-index:2147483647;border:2px solid #1976d2;box-shadow:0 0 0 2px rgba(25,118,210,.18);border-radius:6px;box-sizing:border-box;transition:top .12s ease,left .12s ease,width .12s ease,height .12s ease;';
+      overlay.style.cssText='--fp-highlight-color:#1976d2;--fp-highlight-shadow:rgba(25,118,210,.18);position:fixed;pointer-events:none;z-index:2147483647;border:2px solid var(--fp-highlight-color);box-shadow:0 0 0 2px var(--fp-highlight-shadow);border-radius:6px;box-sizing:border-box;transition:top .12s ease,left .12s ease,width .12s ease,height .12s ease;';
+      syncHighlightTheme();
       (document.body||document.documentElement).appendChild(overlay);
       const update=()=>{
         try{
@@ -1114,7 +1224,68 @@
     // lookup handling, and verification behavior identical to normal Autofill.
     return replayRecording(recording,{onlyIndexes:[idx],fillOnlyBlank:false,fastOverwrite:true});
   }
-  chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{if(msg?.type==='GET_CONTEXT'){const ctx=state.lastContext||detectContext();if(ctx.objectApiName&&!ctx.objectLabel||/^[A-Za-z0-9_]+__c$/.test(ctx.objectLabel)){FP.loadSalesforceMetadata(ctx.objectApiName,ctx.recordId).then(info=>{if(info?.label)ctx.objectLabel=info.label;sendResponse(ctx)}).catch(()=>sendResponse(ctx));return true;}sendResponse(ctx);return}if(msg?.type==='GET_FIELD_DESCRIPTORS'){
+  chrome.runtime.onMessage.addListener((msg,sender,sendResponse)=>{
+    if(msg?.type==='PREPARE_TEST_CAPTURE'){
+      (async()=>{
+        try{
+          const root=state.overlay||document.getElementById('forcepilot-root');
+          const highlight=document.getElementById('forcepilot-focus-highlight-overlay');
+          const extra=[...document.querySelectorAll('[data-forcepilot-launcher], .forcepilot-launcher')].filter(el=>el!==root);
+          state.captureHidden={
+            elements:[root,highlight,...extra].filter(Boolean).map(el=>({el,visibility:el.style.visibility,display:el.style.display})),
+            scrollbarStyle:null
+          };
+          state.captureHidden.elements.forEach(({el})=>{el.style.visibility='hidden';el.style.display='none';});
+          const scrollbarStyle=document.createElement('style');
+          scrollbarStyle.dataset.forcepilotCaptureStyle='true';
+          scrollbarStyle.textContent='html,body,*{scrollbar-width:none!important;-ms-overflow-style:none!important}html::-webkit-scrollbar,body::-webkit-scrollbar,*::-webkit-scrollbar{width:0!important;height:0!important;display:none!important}';
+          document.documentElement.appendChild(scrollbarStyle);
+          state.captureHidden.scrollbarStyle=scrollbarStyle;
+          await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+          sendResponse({ok:true});
+        }catch(error){sendResponse({ok:false,message:error?.message||'Could not hide ForcePilot overlays.'});}
+      })();
+      return true;
+    }
+    if(msg?.type==='RESTORE_TEST_CAPTURE'){
+      try{
+        const hidden=state.captureHidden;
+        if(hidden?.scrollbarStyle?.isConnected) hidden.scrollbarStyle.remove();
+        if(Array.isArray(hidden?.elements)) hidden.elements.forEach(({el,visibility,display})=>{if(el){el.style.visibility=visibility||'';el.style.display=display||'';}});
+        state.captureHidden=null;
+        sendResponse({ok:true});
+      }catch(error){sendResponse({ok:false,message:error?.message||'Could not restore ForcePilot overlays.'});}
+      return false;
+    }
+    if(msg?.type==='GET_CONTEXT'){
+      const detected=detectContext();
+      // Context is rebuilt from the current Salesforce URL/DOM on every request.
+      // Do not merge the prior object back in; that is unsafe during SPA navigation.
+      state.lastContext={...detected};
+      sendResponse(state.lastContext);
+      if(state.lastContext.objectApiName&&state.lastContext.objectApiName!=='Salesforce'){
+        FP.loadSalesforceMetadata(state.lastContext.objectApiName,state.lastContext.recordId).then(info=>{
+          if(info){
+            state.lastContext={...state.lastContext,objectLabel:info.label||state.lastContext.objectLabel,objectLabelPlural:info.labelPlural||info.label||state.lastContext.objectLabel};
+          }
+        }).catch(()=>{});
+      }
+      return;
+    }
+    if(msg?.type==='REFRESH_CONTEXT'){
+      (async()=>{
+        const detected=detectContext();
+        state.lastContext={...detected};
+        if(detected.objectApiName&&detected.objectApiName!=='Salesforce'){
+          const info=await FP.loadSalesforceMetadata(detected.objectApiName,detected.recordId).catch(()=>null);
+          if(info){
+            state.lastContext={...state.lastContext,objectLabel:info.label||detected.objectLabel,objectLabelPlural:info.labelPlural||info.label||detected.objectLabel};
+          }
+        }
+        sendResponse(state.lastContext);
+      })();
+      return true;
+    }if(msg?.type==='GET_FIELD_DESCRIPTORS'){
       (async()=>{try{
         const ctx=detectContext();
         await FP.loadSalesforceMetadata(ctx.objectApiName,ctx.recordId);
@@ -1136,6 +1307,6 @@
   // independent from the timing of the first Record/field-change event.
   try{const bootContext=detectContext();if(bootContext.objectApiName&&bootContext.objectApiName!=='Salesforce')FP.loadSalesforceMetadata(bootContext.objectApiName,bootContext.recordId).catch(()=>{});}catch{}
   let overlayEnabled=true;
-  FP.getSettings().then(s=>{overlayEnabled=s.showOverlay!==false;if(overlayEnabled)ensureOverlay();}).catch(()=>ensureOverlay());
-  if(chrome.storage?.onChanged?.addListener) chrome.storage.onChanged.addListener((changes,area)=>{if(area!=='local'||!changes[FP.SETTINGS_KEY])return;const next=changes[FP.SETTINGS_KEY].newValue||{};overlayEnabled=next.showOverlay!==false;state.dateRelativeToToday=next.dateRelativeToToday!==false;if(overlayEnabled)ensureOverlay();else{try{state.overlay?.remove();}catch{}state.overlay=null;}});
+  FP.getSettings().then(s=>{state.darkMode=s.darkMode===true;state.launcherMode=s.launcherMode==='current'?'bubble':(['edge','bubble','off'].includes(s.launcherMode)?s.launcherMode:'edge');overlayEnabled=s.showOverlay!==false&&state.launcherMode!=='off';if(overlayEnabled)ensureOverlay();}).catch(()=>ensureOverlay());
+  if(chrome.storage?.onChanged?.addListener) chrome.storage.onChanged.addListener((changes,area)=>{if(area!=='local'||!changes[FP.SETTINGS_KEY])return;const next=changes[FP.SETTINGS_KEY].newValue||{};state.darkMode=next.darkMode===true;state.launcherMode=next.launcherMode==='current'?'bubble':(['edge','bubble','off'].includes(next.launcherMode)?next.launcherMode:'edge');overlayEnabled=next.showOverlay!==false&&state.launcherMode!=='off';if(overlayEnabled){ensureOverlay();applyLauncherMode(state.launcherMode);updatePresence();syncHighlightTheme();}else{try{state.overlay?.remove();}catch{}state.overlay=null;syncHighlightTheme();}});
 })();
