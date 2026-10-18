@@ -1,284 +1,81 @@
-<div align="center">
+# ForcePilot — Salesforce Autofill & Testing
 
-# ForcePilot
+**Test faster. Document better.**
 
-**Record Salesforce field data once. Reuse it everywhere.**
+ForcePilot is a Chrome extension that helps Salesforce QA teams reduce repetitive record setup, generate test data, manage testing sessions, capture evidence, and export test documentation.
 
-A Chrome and Microsoft Edge extension that captures field changes on a Salesforce Lightning record and autofills them back onto comparable records of the same Salesforce object — built for QA, testing, troubleshooting, and anyone tired of re-entering the same setup data.
+[Explore the interactive product tour](https://samdannyl.github.io/ForcePilot/marketing/) · [Report an issue](https://github.com/SamDannyl/ForcePilot/issues)
 
-<nobr>
-<img src="https://img.shields.io/badge/Manifest-V3-4A90D9" alt="Manifest V3">
-<img src="https://img.shields.io/badge/Platform-Chrome%20%7C%20Edge-4285F4" alt="Platform">
-<img src="https://img.shields.io/badge/Version-2.0-1976D2" alt="Version 2.0">
-<img src="https://img.shields.io/badge/License-MIT-lightgrey" alt="License">
-</nobr>
+## Features
 
-</div>
+### Record and autofill fields
+- Save reusable recordings of Salesforce field values.
+- Reuse recorded values on similar records and forms.
+- Select specific fields or autofill a full recording.
+- Enable **Fill empty fields only** to avoid overwriting existing values.
+- Review field-level results and retry unsuccessful fields.
+
+### Generate test data
+- Generate values for supported text, email, phone, URL, number, currency, percent, date/time, picklist, multi-select picklist, checkbox, and address fields.
+- Use **Custom Text + Unique ID** for recognizable, unique test values.
+- Generate dates relative to today or within a date range.
+- Select a random valid picklist option or choose from specific values.
+
+### Capture and export testing evidence
+- Start, save, resume, and finish testing sessions.
+- Import scenario titles from Excel/TSV, Markdown tables, or plain-text lists. Other columns are ignored.
+- Track **Pass**, **Fail**, and **Blocked** scenario outcomes.
+- Capture screenshots, assign them to scenarios, and review unassigned captures.
+- Export a Word document and a ZIP archive of screenshots.
+
+### Built for QA workflows
+- Work from the Chrome side panel and switch between light and dark themes.
+- Press **Alt+S** to capture a screenshot in the active testing session.
+- Press **Alt+X** to open ForcePilot on the current Salesforce tab.
+
+## Product tour
+
+The [interactive product tour](https://samdannyl.github.io/ForcePilot/marketing/) covers these areas in order: Saved recordings, Randomization, Recorded fields, Autofill results, Testing sessions, Testing workspace, and Evidence export.
+
+## Install locally
+
+1. Clone or download this repository and extract the files.
+2. Open `chrome://extensions` in Chrome.
+3. Enable **Developer mode**.
+4. Select **Load unpacked** and choose the folder containing `manifest.json`.
+5. Open a supported Salesforce page and launch ForcePilot from the toolbar or side panel.
+
+After changing files, return to `chrome://extensions` and reload the extension.
+
+## Typical workflows
+
+**Reuse a recording:** Start recording on a Salesforce page, make the desired field changes, save the recording, then open a similar record and run Autofill. Review the selected fields and results before applying or retrying values.
+
+**Run a testing session:** Start a session, optionally import scenario titles, capture screenshots, assign captures to scenarios, record outcomes, then finish testing and export the Word document and/or screenshots ZIP.
+
+## Repository layout
+
+- `manifest.json` — Chrome extension configuration
+- `background.js`, `page_bridge.js` — background and Salesforce page integration
+- `popup.*`, `sidepanel.*`, `options.*` — extension interfaces
+- `src/` — autofill, randomization, testing, export, and shared modules
+- `branding/`, `icons/` — brand and extension icons
+- `docs/marketing/` — interactive product tour and its assets
+- `docs/PUBLISHING_WEBSITE.md` — GitHub Pages setup
+- `CHANGELOG.md` — release notes
+
+## Publish the product tour
+
+In GitHub, open **Settings → Pages**, choose **Deploy from a branch**, select the default branch and `/docs` folder, then save. The tour will be published at [samdannyl.github.io/ForcePilot/marketing](https://samdannyl.github.io/ForcePilot/marketing/) once deployment completes. See [`docs/PUBLISHING_WEBSITE.md`](docs/PUBLISHING_WEBSITE.md) for details.
+
+## Safe use
+
+Autofill can change values on the active Salesforce page. Review selected and generated values before applying them, and use a Salesforce sandbox/test environment for QA whenever possible. Scenario imports currently use scenario titles only.
+
+## Release
+
+See [`CHANGELOG.md`](CHANGELOG.md) for version **2.3.0**.
 
 ---
 
-# ForcePilot
-
-ForcePilot is a browser extension for recording and reusing Salesforce field changes.
-
-Record a Salesforce setup once, save it as a named recording, and reuse it on compatible records through the ForcePilot Side Panel.
-
-ForcePilot works with Salesforce Lightning controls and supports common Salesforce field types including text, numbers, dates, checkboxes, picklists, multi-select picklists, addresses, and relative dates.
-
-## 2.0 Highlights
-
-ForcePilot 2.0 adds a more complete testing workflow, improved Salesforce reliability, better evidence handling, new launcher options, and a cleaner interface.
-
-* **Alt + X shortcut** to quickly open and close the ForcePilot Side Panel.
-* **Dark mode Support**
-* **Bubble, Edge, or Off** launcher modes.
-* **Testing workspace** with test cases, steps, screenshots, Autofill, Resume Testing, and session completion.
-* **Screenshot evidence** with timestamp overlays and clipboard paste support.
-* **Screenshot ZIP export** for workflows that require multiple image files.
-* **Improved Word and ZIP exports** with better image quality and smaller file sizes.
-* **Better Salesforce record and object detection** after navigation and refresh.
-* **More reliable recording and Autofill recovery** when Salesforce pages change or reload.
-* **Cleaner and more compact UI** across Side Panel, Popup, Options, Testing, and dialogs.
-* **Improved notifications and error recovery** throughout recording, testing, Autofill, and export workflows.
-
-## What ForcePilot does
-
-The basic workflow is simple:
-
-1. Open a Salesforce record.
-2. Start a recording.
-3. Change the fields you want to reuse.
-4. Stop and save the recording.
-5. Open another compatible record.
-6. Run the recording.
-7. Review the Autofill Results.
-
-Recordings preserve Salesforce field identity and value information so they can be reused reliably across compatible records.
-
-## Core Workflow
-
-```text
-Open Salesforce record
-        ↓
-Start recording
-        ↓
-Change fields / select values
-        ↓
-Stop and save recording
-        ↓
-Open another compatible record
-        ↓
-Run recording
-        ↓
-Review Autofill Results
-```
-
-## Supported Field Types
-
-Text · Textarea · Number · Currency · Percent · Checkbox · Date · Date/Time · Time · Picklist · Multi-select picklist · Address
-
-Relative-date values are also supported, allowing dates such as `Today + 7 days` instead of storing a fixed date.
-
-Support can vary for heavily customized Lightning components or managed-package components.
-
-## Main Features
-
-| Feature                    | Description                                                                                   |
-| -------------------------- | --------------------------------------------------------------------------------------------- |
-| **Record & Replay**        | Capture field changes and save them as named recordings.                                      |
-| **Smart Autofill**         | Fill empty fields only or overwrite existing values.                                          |
-| **Relative Dates**         | Reuse values such as `Today + 7 days` instead of fixed dates.                                 |
-| **Picklists**              | Reuse Salesforce picklist values reliably.                                                    |
-| **Multi-select Picklists** | Select and verify multiple values through Salesforce dual-listboxes.                          |
-| **Retry Failed**           | Retry only the fields that failed during Autofill.                                            |
-| **Import / Export**        | Move recordings between browser profiles as JSON.                                             |
-| **Recording Editor**       | Rename recordings, edit values, enable or disable fields, and remove fields.                  |
-| **Side Panel**             | Browse, record, review, and run recordings without leaving Salesforce.                        |
-| **Testing**                | Organize test cases and steps, capture evidence, run Autofill, and complete testing sessions. |
-| **Evidence Export**        | Export testing evidence to Word or a screenshot-only ZIP.                                     |
-
-## Testing & Evidence
-
-ForcePilot includes a dedicated Testing workflow for Salesforce QA activities.
-
-Testing sessions can include:
-
-* Test cases and individual test steps
-* Screenshots and evidence
-* Autofill actions
-* Resume Testing
-* Session completion and review
-* Word evidence export
-* Screenshot-only ZIP export
-
-### Screenshot Evidence
-
-Testing Evidence supports screenshots captured directly through ForcePilot as well as screenshots pasted from the clipboard, including Windows Snipping Tool.
-
-Native ForcePilot screenshots include a timestamp overlay.
-
-Pasted screenshots remain unchanged and are not timestamped.
-
-### Evidence Exports
-
-Testing sessions can export:
-
-**Microsoft Word**
-
-A structured evidence document suitable for sharing or documentation.
-
-**Screenshot ZIP**
-
-A ZIP containing timestamp-named screenshots for workflows where individual image files need to be attached separately, such as legacy Confluence/Data Center workflows.
-
-Exports use optimized image copies so the original stored evidence remains available for preview and other actions.
-
-## Launcher
-
-ForcePilot can appear on Salesforce pages using one of three launcher styles:
-
-* **Bubble** — compact floating launcher
-* **Edge** — right-edge frosted-glass launcher
-* **Off** — no Salesforce launcher
-
-You can change the launcher style from Options.
-
-You can also use:
-
-```text
-Alt + X
-```
-
-to open or close the ForcePilot Side Panel.
-
-## Installation
-
-ForcePilot is distributed as an unpacked Manifest V3 extension.
-
-### Chrome
-
-1. Clone or download this repository.
-2. Open `chrome://extensions/`.
-3. Turn on **Developer mode**.
-4. Click **Load unpacked**.
-5. Select the ForcePilot folder containing `manifest.json`.
-6. Open Salesforce and launch ForcePilot from the extension icon or Salesforce launcher.
-
-### Microsoft Edge
-
-1. Clone or download this repository.
-2. Open `edge://extensions/`.
-3. Turn on **Developer mode**.
-4. Click **Load unpacked**.
-5. Select the ForcePilot folder containing `manifest.json`.
-6. Open Salesforce and launch ForcePilot.
-
-### Supported Salesforce Domains
-
-```text
-*.salesforce.com
-*.lightning.force.com
-*.my.salesforce.com
-*.visualforce.com
-*.vf.force.com
-```
-
-## Settings
-
-ForcePilot includes settings for:
-
-* Fill empty fields only
-* Verify values after Autofill
-* Stop on first failure
-* Salesforce launcher visibility/style
-* Relative-date behavior
-* Word and Screenshot ZIP image quality
-
-Export image quality can be configured from **70%–95%**, with **88%** as the default.
-
-## Project Structure
-
-```text
-ForcePilot/
-
-├── manifest.json
-├── background.js
-├── popup.html
-├── popup.js
-├── popup.css
-├── sidepanel.html
-├── sidepanel.js
-├── sidepanel.css
-├── options.html
-├── options.js
-├── options.css
-├── page_bridge.js
-├── src/
-│   ├── content.js
-│   ├── material-icons.js
-│   ├── shared.js
-│   └── shared-module.js
-├── icons/
-└── branding/
-```
-
-## Development
-
-ForcePilot has no build step. The source can be loaded directly into Chrome or Microsoft Edge as an unpacked extension.
-
-After making a code change:
-
-1. Save the files.
-2. Reload ForcePilot from the browser extension page.
-3. Refresh the Salesforce tab.
-4. Test the affected recording, Autofill, or Testing workflow.
-
-## Privacy & Data
-
-ForcePilot does not require a separate ForcePilot account or Salesforce credentials.
-
-It uses the Salesforce session already authenticated in the browser.
-
-Recordings and settings are stored in the browser's extension storage.
-
-Exported recordings and testing evidence can contain Salesforce data entered or captured by the user, so treat them as potentially sensitive.
-
-Do not commit customer data, credentials, access tokens, session tokens, or other confidential Salesforce information to this repository.
-
-## Reporting Issues
-
-When opening an issue, include:
-
-* Salesforce object and field type
-* Action you were performing
-* What happened
-* Browser version
-* Relevant console error, when safe to share
-
-Remove customer, production, credential, and other confidential Salesforce information before posting screenshots or logs.
-
-## Contributing
-
-Bug reports, feature ideas, and pull requests are welcome through GitHub Issues and Pull Requests.
-
-## Versioning
-
-The published extension version is defined in `manifest.json`.
-
-This repository is prepared as the **2.0 release**.
-
-See [`CHANGELOG.md`](CHANGELOG.md) for the release history and detailed changes.
-
-## License
-
-ForcePilot is licensed under the **MIT License**.
-
-See [`LICENSE`](LICENSE) for the full license text.
-
----
-
-<div align="center">
-
-<sub>ForcePilot is an independent project and is not affiliated with, endorsed by, or sponsored by Salesforce, Inc. Salesforce and related marks are trademarks of Salesforce, Inc.</sub>
-
-</div>
+ForcePilot is an independent project and is not affiliated with or endorsed by Salesforce, Inc.

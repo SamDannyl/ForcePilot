@@ -16,38 +16,16 @@
         <img src="branding/forcepilot-wordmark-dark.png" class="brand-word brand-word-dark" alt="ForcePilot">
       </div>
     </header>
-
     <main>
       <section class="page-status" aria-live="polite">
         <span id="statusDot" class="status-dot" aria-hidden="true"></span>
-        <div class="status-copy">
-          <strong id="connectionTitle">Checking connection</strong>
-          <span id="connectionDetail">Checking this tab…</span>
-        </div>
+        <div class="status-copy"><strong id="connectionTitle">Checking connection</strong><span id="connectionDetail">Checking this tab…</span></div>
       </section>
-
-      <button class="primary open-button" id="open" type="button">
-        <span class="open-icon" aria-hidden="true"><span class="fp-icon-slot" data-icon="play"></span></span>
-        <span id="openLabel">Launch ForcePilot</span>
-      </button>
-
-      <button class="popup-row options-link" id="manage" type="button">
-        <span class="row-icon" aria-hidden="true"><span class="fp-icon-slot" data-icon="settings"></span></span>
-        <span class="row-label">Recordings &amp; Settings</span>
-        <span class="row-arrow" aria-hidden="true"><span class="fp-icon-slot" data-icon="chevron"></span></span>
-      </button>
-
-      <div class="popup-row theme-row">
-        <div class="row-icon theme-icon" aria-hidden="true"><span class="fp-icon-slot" data-icon="darkMode"></span></div>
-        <label class="row-label theme-label" for="darkMode">Dark mode</label>
-        <label class="switch popup-theme-switch" title="Toggle dark mode">
-          <input id="darkMode" type="checkbox" role="switch" aria-label="Dark mode">
-          <span class="slider" aria-hidden="true"></span>
-        </label>
-      </div>
+      <button class="primary open-button" id="open" type="button"><span class="open-icon" aria-hidden="true"><span class="fp-icon-slot" data-icon="play"></span></span><span id="openLabel">Launch ForcePilot</span></button>
+      <button class="popup-row options-link" id="manage" type="button"><span class="row-icon" aria-hidden="true"><span class="fp-icon-slot" data-icon="settings"></span></span><span class="row-label">Recordings &amp; Settings</span><span class="row-arrow" aria-hidden="true"><span class="fp-icon-slot" data-icon="chevron"></span></span></button>
+      <div class="popup-row theme-row"><div class="row-icon theme-icon" aria-hidden="true"><span class="fp-icon-slot" data-icon="darkMode"></span></div><label class="row-label theme-label" for="darkMode">Dark mode</label><label class="switch popup-theme-switch" title="Toggle dark mode"><input id="darkMode" type="checkbox" role="switch" aria-label="Dark mode"><span class="slider" aria-hidden="true"></span></label></div>
     </main>
   </div>
-
   <script type="module" src="popup.js"></script>
 </body>
 </html>
