@@ -66,11 +66,12 @@ html[data-theme="dark"] .brand-word-dark{display:block}
 .row-arrow .fp-icon{width:16px;height:16px;flex-basis:16px}
 .options-link:hover .row-arrow{color:var(--fp-blue);background:rgba(25,118,210,.06)}
 
-.theme-row{cursor:default;margin-bottom:0;transition:background .12s ease,border-color .12s ease,box-shadow .12s ease}
+.theme-row{cursor:pointer;margin-bottom:0;transition:background .12s ease,border-color .12s ease,box-shadow .12s ease}
 .theme-row:hover{background:var(--fp-blue-soft);border-color:var(--fp-border);box-shadow:var(--fp-shadow)}
-.theme-row:focus-within{background:var(--fp-blue-soft);border-color:var(--fp-border)}
+/* Keep visual highlight pointer-driven; focusing the hidden checkbox must not
+   leave the whole row looking hovered after the pointer has moved away. */
 .theme-icon{color:var(--fp-muted)}
-.theme-label{cursor:default;color:var(--fp-text)}
+.theme-label{cursor:pointer;color:var(--fp-text)}
 
 /* Popup theme switch */
 .popup-theme-switch{position:relative;width:40px;height:24px;display:block;justify-self:end;flex:none}
@@ -104,3 +105,31 @@ body{width:304px}
 .popup-row{height:44px;margin-bottom:5px;padding:0 10px;border-radius:8px;column-gap:8px}
 .row-icon{width:24px;height:24px}.row-label{font-size:12px;line-height:17px}.row-arrow{width:18px;height:18px}
 .popup-theme-switch{width:38px;height:22px}.popup-theme-switch .slider:before{width:16px;height:16px;top:2px;left:2px}.popup-theme-switch input:checked + .slider:before{transform:translateX(14px)}
+
+
+/* Dark-mode row: keep the hover affordance, but avoid a box/border around the option. */
+html[data-theme="dark"] .popup .theme-row {
+  border-color: transparent !important;
+  box-shadow: none !important;
+  background: transparent;
+  cursor: pointer;
+}
+html[data-theme="dark"] .popup .theme-row:hover {
+  background: var(--theme-control-hover) !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+html[data-theme="dark"] .popup .theme-row .theme-icon {
+  transition: color .12s ease, background-color .12s ease;
+}
+html[data-theme="dark"] .popup .theme-row:hover .theme-icon {
+  color: var(--theme-accent) !important;
+  background: var(--theme-accent-soft) !important;
+}
+
+.popup .theme-icon .fp-dark-mode-icon {
+  width: 20px;
+  height: 20px;
+  display: block;
+  fill: none;
+}

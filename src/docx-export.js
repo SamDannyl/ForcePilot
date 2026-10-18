@@ -6,8 +6,8 @@
  * styles, section properties and namespaces stable while we only add the
  * document content and evidence image relationships that the session needs.
  *
- * Runtime dependency: JSZip is loaded locally by sidepanel.html as
- * src/vendor/jszip.min.js and exposed as window.JSZip.
+ * Runtime dependency: the side panel loads the bundled src/vendor/jszip.min.js
+ * on demand immediately before an export and exposes it as window.JSZip.
  */
 
 const WORD_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
@@ -50,8 +50,8 @@ function escXmlText(value) {
     .replace(/'/g, '&apos;');
 }
 
-function textRunXml(text, preserve = true, bold = false) {
-  const rPr = bold ? '<w:rPr><w:b/></w:rPr>' : '';
+function textRunXml(text, preserve = true, bold = false, italic = false) {
+  const rPr = (bold || italic) ? `<w:rPr>${bold ? '<w:b/>' : ''}${italic ? '<w:i/>' : ''}</w:rPr>` : '';
   const value = escXmlText(String(text ?? ''));
   return `<w:r>${rPr}<w:t${preserve ? ' xml:space="preserve"' : ''}>${value}</w:t></w:r>`;
 }
@@ -72,16 +72,14 @@ function paragraphXml({ style, children, keepNext = false, pageBreakBefore = fal
 }
 
 function buildTestCaseHeading(title) {
-  return paragraphXml({ style: 'ForcePilotTestCase', children: textRunXml(title, true, false), keepNext: true, before: 80, after: 120 });
+  return paragraphXml({ style: 'ForcePilotTestCase', children: textRunsWithBreaks(title), keepNext: true, before: 80, after: 120 });
 }
 
-function buildStepParagraph(index, text) {
-  return paragraphXml({
-    style: 'ForcePilotStep',
-    children: `${textRunXml(`Step ${index}`, true, true)}${textRunsWithBreaks(`  ${String(text ?? '')}`)}`,
-    keepNext: true,
-    after: 70
-  });
+function buildEvidenceNote(note) {
+  const value = String(note || '').trim();
+  if (!value) return '';
+  const children = String(value).split(/\r?\n/).map((part, index) => `${textRunXml(part, true, false, true)}${index < String(value).split(/\r?\n/).length - 1 ? '<w:br/>' : ''}`).join('');
+  return paragraphXml({ style: 'ForcePilotStep', children, before: 30, after: 40 });
 }
 
 function buildSimpleHeading(text, options = {}) {
@@ -273,6 +271,7 @@ function buildBodyXml(session, evidenceBlobs) {
         assetsByFingerprint.set(fingerprint, asset);
         imageParts.push({ fileName, data: prepared.blob, buffer: prepared.buffer, extension, fingerprint });
       }
+      if (String(evidence.note || '').trim()) chunks.push(buildEvidenceNote(evidence.note));
       drawingCounter += 1;
       chunks.push(buildImageParagraph(asset.buffer, asset.relId, drawingCounter, asset.fileName));
     }
@@ -289,14 +288,10 @@ function buildBodyXml(session, evidenceBlobs) {
   }
 
   for (const tc of session?.testCases || []) {
-    chunks.push(buildTestCaseHeading(String(tc.title || '').trim() || 'Test case'));
-    for (const [stepPosition, step] of (tc.steps || []).entries()) {
-      const stepIndex = Number(step?.index) || (stepPosition + 1);
-      chunks.push(buildStepParagraph(stepIndex, step?.text || ''));
-      const stepEvidence = allEvidence.filter(item => item.stepId === step.id);
-      stepEvidence.forEach(item => usedEvidence.add(item.id));
-      addEvidenceImages(stepEvidence);
-    }
+    chunks.push(buildTestCaseHeading(String(tc.title || '').trim() || 'Scenario'));
+    const caseEvidence = allEvidence.filter(item => item.testCaseId === tc.id);
+    caseEvidence.forEach(item => usedEvidence.add(item.id));
+    addEvidenceImages(caseEvidence);
   }
 
   const unassociated = allEvidence.filter(item => !usedEvidence.has(item.id));
@@ -354,7 +349,7 @@ export async function buildTestingDocx(session, evidenceBlobs, { onProgress, tem
 
   if (coreFile) {
     const coreXml = await coreFile.async('text');
-    const coreTitle = String(session?.workProduct || '').trim() || 'ForcePilot Test Evidence';
+    const coreTitle = String(session?.exportFilename || session?.workProduct || session?.sessionName || '').trim() || 'ForcePilot Test Evidence';
     zip.file('docProps/core.xml', patchCoreProperties(coreXml, coreTitle));
   }
 
@@ -540,7 +535,7 @@ export async function validateDocxBlob(blob) {
 }
 
 export function getTestingDocxFilename(session) {
-  const raw = String(session?.workProduct || '').trim();
+  const raw = String(session?.exportFilename || session?.workProduct || session?.sessionName || '').trim().replace(/\.(?:docx|zip)$/i, '');
   const safe = raw.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/[. ]+$/g, '').trim();
   if (safe) return `${safe}.docx`;
   const stamp = new Date().toISOString().replace(/[:]/g, '-').replace(/\.\d{3}Z$/, 'Z');

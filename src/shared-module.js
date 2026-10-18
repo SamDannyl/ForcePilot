@@ -6,11 +6,11 @@
  * Not affiliated with Salesforce, Inc.
  */
 
-export const VERSION='2.0';
+export const VERSION=chrome.runtime.getManifest().version;
 export const SCHEMA_VERSION=5;
 export const STORAGE_KEY='forcepilot.recordings.v1';
 export const SETTINGS_KEY='forcepilot.settings.v1';
-export const DEFAULT_SETTINGS=Object.freeze({stopOnFailure:false,verifyAfterReplay:true,fillEmptyOnly:true,showOverlay:true,launcherMode:'edge',dateRelativeToToday:true,darkMode:false,skipTestCaseReview:true,exportImageQuality:88});
+export const DEFAULT_SETTINGS=Object.freeze({stopOnFailure:false,verifyAfterReplay:true,fillEmptyOnly:true,showOverlay:true,launcherMode:'edge',darkMode:false,skipTestCaseReview:true,exportImageQuality:88,experienceCloudDomains:[]});
 export const normalizeText=v=>String(v??'').replace(/\s+/g,' ').trim();
 export const escapeHtml=v=>String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 export const normalizeLabel=v=>normalizeText(v).toLowerCase().replace(/[\u200b\u00a0]/g,' ');
@@ -135,8 +135,11 @@ export const saveRecordings=async r=>{if(!r||typeof r!=='object')throw new Error
 export const getSettings=async()=>{
   const d=await chrome.storage.local.get([SETTINGS_KEY,'ss_settings_v78','ss_settings_v77']);
   const raw={...(d.ss_settings_v77||{}),...(d.ss_settings_v78||{}),...(d[SETTINGS_KEY]||{})};
-  const boolKeys=['stopOnFailure','verifyAfterReplay','fillEmptyOnly','showOverlay','dateRelativeToToday','darkMode','skipTestCaseReview'];
+  const boolKeys=['stopOnFailure','verifyAfterReplay','fillEmptyOnly','showOverlay','darkMode','skipTestCaseReview'];
   const out={...DEFAULT_SETTINGS};
+  const domainRaw=raw.experienceCloudDomains;
+  const domainItems=Array.isArray(domainRaw)?domainRaw:(typeof domainRaw==='string'?domainRaw.split(/[\r\n,;]+/):[]);
+  out.experienceCloudDomains=[...new Set(domainItems.map(v=>String(v||'').trim().toLowerCase().replace(/^https?:\/\//,'').replace(/\/.*$/,'').replace(/^\*\./,'').replace(/:\d+$/,'')).filter(v=>/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(v)))].slice(0,50);
   for(const key of boolKeys) if(key in raw) out[key]=Boolean(raw[key]);
   const legacyMode=String(raw.launcherMode||'');
   if(legacyMode==='current') out.launcherMode='bubble';

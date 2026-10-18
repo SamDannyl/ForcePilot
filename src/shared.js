@@ -8,9 +8,10 @@
 
 (function(){
   'use strict';
-  if(self.ForcePilotShared?.VERSION==='2.0') return;
+  const VERSION=chrome.runtime.getManifest().version;
+  if(self.ForcePilotShared?.VERSION===VERSION) return;
   const FP={};
-  FP.VERSION='2.0';
+  FP.VERSION=VERSION;
   FP.SCHEMA_VERSION=5;
   FP.STORAGE_KEY='forcepilot.recordings.v1';
   FP.SETTINGS_KEY='forcepilot.settings.v1';
@@ -28,12 +29,12 @@
   FP.normalizeTime=v=>{const s=String(v??'').trim(),m=s.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i);if(!m)return s;let h=+m[1];if(m[4]?.toUpperCase()==='PM'&&h<12)h+=12;if(m[4]?.toUpperCase()==='AM'&&h===12)h=0;return `${String(h).padStart(2,'0')}:${m[2]}:${m[3]||'00'}`};
   FP.parseMultiValues=v=>[...new Set(String(v??'').split(/\s*;\s*|\s*,\s*/).map(FP.normalizeText).filter(Boolean))];
 
-  FP.parseTargetSelectionName=v=>{const raw=FP.normalizeText(v);if(!raw)return null;const m=raw.match(/^sfdc:RecordField\.([^.]*)\.(.+)$/i);if(!m)return{raw};const objectApiName=FP.normalizeText(m[1]),fieldPath=FP.normalizeText(m[2]);const apiName=fieldPath.includes('__r__')?(fieldPath.split('__r__').pop()||fieldPath):fieldPath;return{raw,objectApiName,fieldPath,apiName}};
+  FP.parseTargetSelectionName=v=>{const raw=FP.normalizeText(v);if(!raw)return null;const m=raw.match(/^sfdc:RecordField\.([^.]*)\.(.+)$/i);if(!m)return{raw};const objectApiName=FP.normalizeText(m[1]);const rawFieldPath=FP.normalizeText(m[2]);const labelMatch=rawFieldPath.match(/^label:(.+)$/i);const labelHint=labelMatch?FP.normalizeText(labelMatch[1]):'';const fieldPath=labelHint?'':rawFieldPath;const apiName=labelHint?'':(fieldPath.includes('__r__')?(fieldPath.split('__r__').pop()||fieldPath):fieldPath);return{raw,objectApiName,fieldPath:fieldPath||undefined,apiName:apiName||undefined,labelHint:labelHint||undefined,isLabelTarget:!!labelHint}};
   FP.schemaVersion=5;
-  FP.normalizeTargetSchema=(target,context={})=>{if(!target||typeof target!=='object')return target;const out={...target},p=FP.parseTargetSelectionName(out.targetSelectionName);if(!out.objectApiName)out.objectApiName=p?.objectApiName||context?.objectApiName||undefined;if(!out.fieldPath)out.fieldPath=p?.fieldPath||undefined;if(!out.apiName&&!out.fieldPath?.includes('__r__'))out.apiName=p?.apiName||undefined;if(out.label)out.label=FP.normalizeText(out.label).replace(/^\s*\*\s*/, '');if(!out.key)out.key=FP.chooseStableFieldKey({objectApiName:out.objectApiName,apiName:out.apiName,name:out.name,label:out.label,targetSelectionName:out.targetSelectionName,fieldPath:out.fieldPath});else if(String(out.key).startsWith('api:')&&out.objectApiName&&out.apiName)out.key=FP.chooseStableFieldKey({objectApiName:out.objectApiName,apiName:out.apiName,name:out.name,label:out.label,targetSelectionName:out.targetSelectionName,fieldPath:out.fieldPath});if(out.kind==='multipicklist')out.kind='multi-picklist';if(out.kind==='reference')out.kind='lookup';if(!out.fieldType&&out.sfDataType)out.fieldType=out.sfDataType;return out};
+  FP.normalizeTargetSchema=(target,context={})=>{if(!target||typeof target!=='object')return target;const out={...target},p=FP.parseTargetSelectionName(out.targetSelectionName);if(!out.objectApiName)out.objectApiName=p?.objectApiName||context?.objectApiName||undefined;const bogusLabelApi=/^label:/i.test(String(out.apiName||''));const bogusLabelPath=/^label:/i.test(String(out.fieldPath||''));if(bogusLabelApi)delete out.apiName;if(bogusLabelPath)delete out.fieldPath;if(!out.fieldPath)out.fieldPath=p?.fieldPath||undefined;if(!out.apiName&&!out.fieldPath?.includes('__r__'))out.apiName=p?.apiName||undefined;if(out.label)out.label=FP.normalizeText(out.label).replace(/^\s*\*\s*/, '');if(!out.label&&p?.labelHint)out.label=p.labelHint;if(!out.key)out.key=FP.chooseStableFieldKey({objectApiName:out.objectApiName,apiName:out.apiName,name:out.name,label:out.label,targetSelectionName:out.targetSelectionName,fieldPath:out.fieldPath});else if((String(out.key).startsWith('api:')||/^field:[^:]+:label:/i.test(String(out.key)))&&out.objectApiName&&out.apiName)out.key=FP.chooseStableFieldKey({objectApiName:out.objectApiName,apiName:out.apiName,name:out.name,label:out.label,targetSelectionName:out.targetSelectionName,fieldPath:out.fieldPath});if(out.kind==='multipicklist')out.kind='multi-picklist';if(out.kind==='reference')out.kind='lookup';if(!out.fieldType&&out.sfDataType)out.fieldType=out.sfDataType;return out};
   FP.normalizeRecordingSchema=recording=>{if(!recording||typeof recording!=='object')return recording;const context=recording.context&&typeof recording.context==='object'?{...recording.context}:{};const steps=Array.isArray(recording.steps)?recording.steps.map((step,i)=>{if(!step||typeof step!=='object')return step;const next={...step,target:FP.normalizeTargetSchema(step.target,context),sequence:step.sequence??i+1};if(next.target?.kind==='multi-picklist'&&!Array.isArray(next.value))next.value=FP.parseMultiValues(next.value);return next}):recording.steps;return{...recording,schemaVersion:5,context,steps}};
 
-  FP.isSalesforceHost=()=>{try{const h=location.hostname.toLowerCase();return location.protocol==='https:'&&(h.endsWith('.salesforce.com')||h.endsWith('.lightning.force.com')||h.endsWith('.my.salesforce.com')||h.endsWith('.visualforce.com')||h.endsWith('.vf.force.com'))}catch{return false}};
+  FP.isSalesforceHost=()=>{try{const h=String(location.hostname||'').toLowerCase();const suffixes=['salesforce.com','lightning.force.com','my.salesforce.com','visualforce.com','vf.force.com','force.com','site.com','salesforce-sites.com','salesforce-communities.com','salesforce-setup.com','salesforce-experience.com','salesforce.app','forceusercontent.com','force-user-content.com','salesforce-scrt.com'];return(location.protocol==='https:'&&(suffixes.some(s=>h===s||h.endsWith('.'+s))||window.__FORCEPILOT_CUSTOM_EXPERIENCE_DOMAIN__===true))||window.__FORCEPILOT_CUSTOM_EXPERIENCE_DOMAIN__===true}catch{return window.__FORCEPILOT_CUSTOM_EXPERIENCE_DOMAIN__===true}};
   FP.invalidateFieldCaches=()=>{rootsCache=null;rootsCacheAt=0;candidatesCache=null;candidatesCacheAt=0;fieldRevision++};
   FP.walkRoots=()=>{
     const now=Date.now();
@@ -50,14 +51,75 @@
   const DATATABLE_SELECTOR='lightning-datatable,[role="grid"],[role="treegrid"]';
   const COMPONENT_TAGS=new Set(['lightning-input-field','lightning-input','lightning-combobox','lightning-textarea','lightning-record-picker','lightning-lookup','lightning-dual-listbox','lightning-input-address','lightning-timepicker','lightning-base-combobox']);
   FP.logicalComponentHost=node=>{const hosts=FP.collectComponentHosts(node);const semantic=hosts.find(h=>h.matches?.(FIELD_CONTAINER_SELECTOR));if(semantic)return semantic;const inputField=hosts.find(h=>String(h.tagName||'').toLowerCase()==='lightning-input-field');if(inputField)return inputField;return hosts.find(h=>COMPONENT_TAGS.has(String(h.tagName||'').toLowerCase())||h.matches?.('[data-sf-field],[data-sf-address]'))||null};
-  FP.fieldRoot=node=>{if(!node)return null;try{const nested=FP.deepQueryFirst(node,'[data-target-selection-name^="sfdc:RecordField."]');if(nested)return nested}catch{}const hosts=FP.collectComponentHosts(node);const semantic=hosts.find(h=>h.matches?.(FIELD_CONTAINER_SELECTOR));if(semantic)return semantic;const directField=hosts.find(h=>String(h.tagName||'').toLowerCase()==='lightning-input-field');if(directField)return directField;return hosts.find(h=>COMPONENT_TAGS.has(String(h.tagName||'').toLowerCase())||h.matches?.('[data-sf-field],[data-sf-address]'))||node};
+  FP.fieldRoot=node=>{
+    if(!node)return null;
+    // Classic Salesforce dual-list picklists have a hidden submitted select plus
+    // *_unselected / *_selected UI lists. Normalize either visible list back to the
+    // field's base select so record, read, and replay use one stable descriptor.
+    try{
+      const tag=String(node.tagName||'').toLowerCase(),id=String(node.id||'');
+      if(tag==='select'&&/(?:_unselected|_selected)$/.test(id)&&/MultiSelectPicklist\.handleMSP(?:Select|UnSelect)/.test(String(node.getAttribute?.('ondblclick')||''))){
+        const base=node.ownerDocument?.getElementById?.(id.replace(/_(?:unselected|selected)$/,''));
+        if(base?.tagName?.toLowerCase()==='select'&&base.multiple)return base;
+      }
+    }catch{}
+    try{const nested=FP.deepQueryFirst(node,'[data-target-selection-name^="sfdc:RecordField."]');if(nested)return nested}catch{}
+    const hosts=FP.collectComponentHosts(node);
+    const semantic=hosts.find(h=>h.matches?.(FIELD_CONTAINER_SELECTOR));if(semantic)return semantic;
+    const directField=hosts.find(h=>String(h.tagName||'').toLowerCase()==='lightning-input-field');if(directField)return directField;
+    return hosts.find(h=>COMPONENT_TAGS.has(String(h.tagName||'').toLowerCase())||h.matches?.('[data-sf-field],[data-sf-address]'))||node
+  };
   FP.isRedundantNativeControl=node=>!!node&&/^(input|textarea|select|button)$/i.test(String(node.tagName||''))&&!!FP.logicalComponentHost(node);
 
-  FP.resolveFieldLabel=(host,element)=>{const clean=v=>FP.normalizeText(v).replace(/^\s*\*\s*/,'').replace(/\s*\*\s*$/,'');const explicit=[host?.getAttribute?.('field-label'),host?.getAttribute?.('label'),host?.getAttribute?.('data-label'),host?.getAttribute?.('data-sf-label'),element?.getAttribute?.('aria-label')?.split(',')[0],element?.getAttribute?.('title')].find(v=>v&&String(v).trim());if(explicit)return clean(explicit);const id=element?.id;if(id){for(const root of FP.walkRoots()){try{const l=root.querySelector?.(`label[for="${CSS.escape(id)}"]`);if(l?.textContent?.trim())return clean(l.textContent)}catch{}}}for(const base of [element?.parentElement,host,host?.parentElement].filter(Boolean)){try{const c=base.matches?.('.slds-form-element,.form-element,[data-field],[data-sf-field],[data-sf-address]')?base:base.closest?.('.slds-form-element,.form-element,[data-field],[data-sf-field],[data-sf-address]');const l=c?.querySelector?.(':scope > .slds-form-element__label,label,.labelCol');if(l?.textContent?.trim())return clean(l.textContent)}catch{}}const deep=FP.deepQueryFirst(host,'label,.slds-form-element__label,.labelCol,[data-label]');if(deep?.textContent?.trim())return FP.normalizeText(deep.textContent);const ph=element?.getAttribute?.('placeholder');return ph?FP.normalizeText(ph).replace(/\s*\*\s*$/,''):''};
+  FP.resolveFieldLabel=(host,element)=>{
+    const clean=v=>FP.normalizeText(v).replace(/^\s*\*\s*/,'').replace(/\s*\*\s*$/,'');
+    const firstText=nodes=>{for(const n of nodes||[]){const t=clean(n?.textContent||n?.getAttribute?.('aria-label')||n?.getAttribute?.('title')||n?.getAttribute?.('data-label')||'');if(t&&t.length<180)return t;}return''};
+    // Explicit component labels are reliable; title is deliberately a last-resort
+    // because Classic lookup/type selectors often use it for help text (e.g. Search scope).
+    const componentLabel=[host?.getAttribute?.('field-label'),host?.getAttribute?.('label'),host?.getAttribute?.('data-label'),host?.getAttribute?.('data-sf-label')].find(v=>v&&String(v).trim());
+    if(componentLabel)return clean(componentLabel);
+    try{const labelled=firstText(Array.from(element?.labels||[]));if(labelled)return labelled}catch{}
+    const labelledBy=String(element?.getAttribute?.('aria-labelledby')||host?.getAttribute?.('aria-labelledby')||'').trim();
+    if(labelledBy){for(const ref of labelledBy.split(/\s+/)){for(const root of FP.walkRoots()){try{const n=root.getElementById?.(ref)||root.querySelector?.(`#${CSS.escape(ref)}`);const t=firstText([n]);if(t)return t}catch{}}}}
+    const id=element?.id;
+    if(id){for(const root of FP.walkRoots()){try{const l=root.querySelector?.(`label[for="${CSS.escape(id)}"]`);const t=firstText([l]);if(t)return t}catch{}}}
+    // Native Lightning/Setup controls commonly expose a visible label beside a
+    // select/combobox without a for= association. Prefer the known field wrappers.
+    for(const base of [element?.parentElement,host,host?.parentElement].filter(Boolean)){
+      try{const c=base.matches?.('.slds-form-element,.form-element,[data-field],[data-sf-field],[data-sf-address]')?base:base.closest?.('.slds-form-element,.form-element,[data-field],[data-sf-field],[data-sf-address]');const l=c?.querySelector?.(':scope > .slds-form-element__label,:scope > label,label,.slds-form-element__label,.field-label,.form-label,.labelCol');const t=firstText([l]);if(t)return t}catch{}
+    }
+    // Classic record edit pages use table rows: the field label is normally the
+    // left labelCol cell and its control sits in the following dataCol cell.
+    try{
+      const row=element?.closest?.('tr');
+      const cell=element?.closest?.('td,th');
+      const preceding=cell?.previousElementSibling;
+      const labelCell=(preceding?.matches?.('.labelCol,.requiredInput,th')?preceding:null)||row?.querySelector?.('.labelCol,th');
+      const t=firstText([labelCell]);if(t)return t;
+      const rowLabel=row?.querySelector?.('label,.labelCol,th,td:first-child');const rt=firstText([rowLabel]);if(rt)return rt;
+    }catch{}
+    // Some Setup forms are div/flex layouts rather than table layouts. Check only
+    // nearby label-like siblings, never the entire form text (which would capture
+    // section headings or help copy as the field name).
+    try{
+      for(const base of [element?.parentElement,host?.parentElement].filter(Boolean)){
+        const siblings=[base.previousElementSibling,base.nextElementSibling,element?.previousElementSibling,element?.nextElementSibling];
+        const t=firstText(siblings.filter(n=>n?.matches?.('label,.labelCol,.slds-form-element__label,.field-label,.form-label,[data-field-label]')));if(t)return t;
+      }
+    }catch{}
+    const deep=FP.deepQueryFirst(host,'label,.slds-form-element__label,.labelCol,.field-label,.form-label,[data-field-label]');const deepText=firstText([deep]);if(deepText)return deepText;
+    const aria=element?.getAttribute?.('aria-label')||host?.getAttribute?.('aria-label');if(aria)return clean(String(aria).split(',')[0]);
+    const placeholder=element?.getAttribute?.('placeholder');if(placeholder)return clean(placeholder);
+    const title=element?.getAttribute?.('title')||host?.getAttribute?.('title');return title?clean(title):'';
+  };
   FP.controlForField=host=>{
     if(!host)return null;
     const tag=String(host.tagName||'').toLowerCase();
     if(/^(input|textarea|select)$/i.test(tag))return host;
+    // Some Salesforce Setup/Aura forms render dropdowns without a
+    // lightning-combobox wrapper. Keep the actual trigger as the control rather
+    // than accidentally choosing a sibling text input that stores its option ID.
+    if(host.matches?.('button[role="combobox"],input[role="combobox"],[role="combobox"],[aria-haspopup="listbox"]'))return host;
     if(tag==='lightning-input')return FP.deepQueryFirst(host,'input:not([type="hidden"]),textarea')||host;
     if(tag==='lightning-textarea')return FP.deepQueryFirst(host,'textarea')||host;
     if(tag==='lightning-base-combobox')return FP.deepQueryFirst(host,'button[role="combobox"],input[role="combobox"]')||host;
@@ -76,7 +138,7 @@
     if(li)return FP.deepQueryFirst(li,'input:not([type="hidden"]),textarea')||li;
     const ta=FP.deepQueryFirst(host,'lightning-textarea');
     if(ta)return FP.deepQueryFirst(ta,'textarea')||ta;
-    for(const s of ['input[type=checkbox]','button[role="checkbox"]','[role="checkbox"]','input[type=date]','input[type=datetime-local]','input[type=time]','input[role="spinbutton"]','[role="spinbutton"]','input[role="combobox"]','button[role="combobox"]','input:not([type=hidden])','textarea','select','[contenteditable="true"]','[role="textbox"]']){
+    for(const s of ['input[type=checkbox]','button[role="checkbox"]','[role="checkbox"]','input[type=date]','input[type=datetime-local]','input[type=time]','input[role="spinbutton"]','[role="spinbutton"]','input[role="combobox"]','button[role="combobox"]','select','input:not([type=hidden])','textarea','[contenteditable="true"]','[role="textbox"]']){
       const f=FP.deepQueryFirst(host,s);if(f)return f;
     }
     return null;
@@ -97,7 +159,31 @@
     if(['date','datetime','time','email','phone','url','textarea','longtextarea','richtext'].includes(exact))return exact;
     return 'text';
   };
-  FP.isLikelyLookupField=(host,el)=>{if(!host&&!el)return false;const h=String(host?.tagName||'').toLowerCase(),api=String(host?.getAttribute?.('field-name')||host?.getAttribute?.('data-field-name')||host?.getAttribute?.('name')||el?.getAttribute?.('name')||'');const explicit=[host?.getAttribute?.('data-field-type'),host?.getAttribute?.('field-type'),host?.getAttribute?.('data-sf-type'),el?.getAttribute?.('data-field-type'),el?.getAttribute?.('field-type'),el?.getAttribute?.('data-sf-type')].filter(Boolean).join(' ').toLowerCase();if(h==='lightning-record-picker'||h==='lightning-lookup'||/lookup|reference|record-picker/.test(explicit))return true;const nested=FP.deepQueryFirst(host,'lightning-record-picker,lightning-lookup,records-record-picker,force-record-lookup,lightning-base-combobox[data-lookup]');if(nested)return true;for(const n of FP.collectComponentHosts(el||host)){try{const tag=String(n.tagName||'').toLowerCase();if(tag==='lightning-lookup'||tag==='lightning-record-picker'||n.hasAttribute?.('data-lookup'))return true;}catch{}}const role=String(el?.getAttribute?.('role')||'').toLowerCase();const auto=String(el?.getAttribute?.('aria-autocomplete')||'').toLowerCase();if((role==='combobox'||el?.getAttribute?.('aria-haspopup')==='listbox')&&auto==='list'&&/(?:^|_)id$/i.test(api))return true;return false};
+  // Recognize only the classic Salesforce lookup markup: a text input with its
+  // matching hidden _lkid/_lkold/_lktp siblings and a lookup widget/change handler.
+  // This strict signature prevents ordinary text inputs (and Lightning lookups)
+  // from being routed into the legacy hidden-ID path.
+  FP.classicLookupParts=(host,el)=>{
+    const candidates=[],seen=new Set(),add=n=>{if(n&&!seen.has(n)){seen.add(n);candidates.push(n)}};
+    add(el);add(host);
+    for(const root of [el,host].filter(Boolean)){try{FP.deepQueryAll(root,'input[id]:not([type="hidden"])',80).forEach(add)}catch{}}
+    for(const input of candidates){
+      try{
+        if(String(input.tagName||'').toLowerCase()!=='input'||String(input.type||'').toLowerCase()==='hidden'||!input.id)continue;
+        const doc=input.ownerDocument||document,id=String(input.id);
+        const bySuffix=suffix=>doc.getElementById(`${id}_${suffix}`);
+        const idInput=bySuffix('lkid'),oldInput=bySuffix('lkold'),typeInput=bySuffix('lktp'),modifiedInput=bySuffix('mod');
+        const widget=bySuffix('lkwgt');
+        const onchange=String(input.getAttribute?.('onchange')||'');
+        const lookupWrap=input.closest?.('.lookupInput');
+        if(idInput&&oldInput&&typeInput&&String(idInput.type||'').toLowerCase()==='hidden'&&(widget||lookupWrap||/_lkid/.test(onchange))){
+          return{input,idInput,oldInput,typeInput,modifiedInput,widget,baseId:id,document:doc};
+        }
+      }catch{}
+    }
+    return null;
+  };
+  FP.isLikelyLookupField=(host,el)=>{if(!host&&!el)return false;if(FP.classicLookupParts(host,el))return true;const h=String(host?.tagName||'').toLowerCase(),api=String(host?.getAttribute?.('field-name')||host?.getAttribute?.('data-field-name')||host?.getAttribute?.('name')||el?.getAttribute?.('name')||'');const explicit=[host?.getAttribute?.('data-field-type'),host?.getAttribute?.('field-type'),host?.getAttribute?.('data-sf-type'),el?.getAttribute?.('data-field-type'),el?.getAttribute?.('field-type'),el?.getAttribute?.('data-sf-type')].filter(Boolean).join(' ').toLowerCase();if(h==='lightning-record-picker'||h==='lightning-lookup'||/lookup|reference|record-picker/.test(explicit))return true;const nested=FP.deepQueryFirst(host,'lightning-record-picker,lightning-lookup,records-record-picker,force-record-lookup,lightning-base-combobox[data-lookup]');if(nested)return true;for(const n of FP.collectComponentHosts(el||host)){try{const tag=String(n.tagName||'').toLowerCase();if(tag==='lightning-lookup'||tag==='lightning-record-picker'||n.hasAttribute?.('data-lookup'))return true;}catch{}}const role=String(el?.getAttribute?.('role')||'').toLowerCase();const auto=String(el?.getAttribute?.('aria-autocomplete')||'').toLowerCase();if((role==='combobox'||el?.getAttribute?.('aria-haspopup')==='listbox')&&auto==='list'&&/(?:^|_)id$/i.test(api))return true;return false};
   FP.controlKind=(host,el)=>{
     const tag=String(host?.tagName||'').toLowerCase();
     const controlTag=String(el?.tagName||'').toLowerCase();
@@ -114,6 +200,13 @@
     if(directTags.has('lightning-datepicker') || FP.deepQueryFirst(host,'lightning-datepicker'))return'date';
     if(directTags.has('lightning-textarea') || FP.deepQueryFirst(host,'lightning-textarea'))return'longText';
     if(directTags.has('lightning-timepicker') || FP.deepQueryFirst(host,'lightning-timepicker'))return'time';
+    // Setup pages sometimes render Profile/Role-style selectors as bare Aura
+    // comboboxes (or a button with aria-haspopup=listbox), not a Lightning base
+    // component. Detect the menu trigger structurally before classifying its
+    // visible child/input as plain text. Lookup controls are upgraded to lookup
+    // by describeField() after this structural pass.
+    const hasComboTrigger=role==='combobox'||el?.getAttribute?.('aria-haspopup')==='listbox'||host?.getAttribute?.('aria-haspopup')==='listbox'||!!FP.deepQueryFirst(host,'button[role="combobox"],input[role="combobox"],[role="combobox"],button[aria-haspopup="listbox"],input[aria-haspopup="listbox"],[aria-haspopup="listbox"]');
+    if(hasComboTrigger)return'picklist';
 
     // 2) Native control signals.
     const inputType=String(el?.type||host?.getAttribute?.('type')||'').toLowerCase();
@@ -126,6 +219,9 @@
     if(inputType==='tel')return'phone';
     if(inputType==='url')return'url';
     if(el?.multiple===true || el?.getAttribute?.('aria-multiselectable')==='true')return'multi-picklist';
+    // Salesforce Setup pages commonly use native <select> elements whose option value is an internal ID.
+    // Treat every single-select as a picklist so recording stores its visible label and replay selects the option.
+    if(controlTag==='select')return'picklist';
     if(role==='combobox'||el?.getAttribute?.('aria-haspopup')==='listbox')return'picklist';
     if(/^(input|textarea)$/.test(controlTag)||el?.isContentEditable)return'text';
 
@@ -137,7 +233,7 @@
   FP.isDisabled=(h,e)=>{const controls=[e,FP.controlForField?.(h)];for(const c of controls.filter(Boolean)){if(c.disabled===true||c.getAttribute?.('aria-disabled')==='true')return true;}return false};
   FP.isReadOnly=(h,e)=>{for(const c of [e,FP.controlForField?.(h)].filter(Boolean)){if(c.readOnly===true||c.getAttribute?.('aria-readonly')==='true')return true;}try{return !!(h?.matches?.('records-formula-output,lightning-output-field,.test-id__output-root')||FP.deepQueryFirst(h,'records-formula-output,lightning-output-field,.test-id__output-root'))}catch{return false}};
   FP.isNoiseField=f=>{const s=FP.normalizeText(f?.label).replace(/[.。…:]+$/g,'').trim();return /^(search|search this list|quick find|global search|password|token|secret|verification code|security code)$/i.test(s)};
-  FP.chooseStableFieldKey=({objectApiName,apiName,name,label,targetSelectionName,fieldPath})=>{const obj=FP.normalizeText(objectApiName);if(targetSelectionName){const parsed=FP.parseTargetSelectionName(targetSelectionName);if(parsed?.raw){if(obj||parsed.objectApiName)return`field:${obj||parsed.objectApiName}:${parsed.fieldPath}`;return`target:${parsed.raw}`;}}if(apiName&&!/(^|[-_])(?:input|combobox|button|field|textbox)[-_]?[a-z0-9]{8,}$/i.test(apiName)&&!/^[0-9a-z]{20,}$/i.test(apiName))return obj?`field:${obj}:${apiName}`:`api:${apiName}`;if(name&&!/^[0-9a-z]{20,}$/i.test(name))return obj?`field:${obj}:${name}`:`name:${name}`;return obj?`field:${obj}:label:${FP.normalizeLabel(label)}`:`label:${FP.normalizeLabel(label)}`};
+  FP.chooseStableFieldKey=({objectApiName,apiName,name,label,targetSelectionName,fieldPath})=>{const obj=FP.normalizeText(objectApiName);if(targetSelectionName){const parsed=FP.parseTargetSelectionName(targetSelectionName);if(parsed?.raw&&!parsed?.isLabelTarget&&parsed?.fieldPath){if(obj||parsed.objectApiName)return`field:${obj||parsed.objectApiName}:${parsed.fieldPath}`;return`target:${parsed.raw}`;}}if(apiName&&!/^label:/i.test(String(apiName))&&!/(^|[-_])(?:input|combobox|button|field|textbox)[-_]?[a-z0-9]{8,}$/i.test(apiName)&&!/^[0-9a-z]{20,}$/i.test(apiName))return obj?`field:${obj}:${apiName}`:`api:${apiName}`;if(name&&!/^label:/i.test(String(name))&&!/^[0-9a-z]{20,}$/i.test(name))return obj?`field:${obj}:${name}`:`name:${name}`;return obj?`field:${obj}:label:${FP.normalizeLabel(label)}`:`label:${FP.normalizeLabel(label)}`};
 
   async function getApiVersion(){if(metadataState.version&&Date.now()-metadataState.versionAt<1800000)return metadataState.version;try{const r=await fetch('/services/data/',{credentials:'include',cache:'no-store'});if(r.ok){const arr=await r.json();const nums=Array.isArray(arr)?arr.map(v=>Number(v.version)).filter(Number.isFinite):[];if(nums.length){metadataState.version=Math.max(...nums).toFixed(1);metadataState.versionAt=Date.now();return metadataState.version}}}catch{}return null}
   function normalizeDescribeField(f){if(!f)return null;const type=String(f.type||'').toLowerCase();return{...f,apiName:f.name,label:f.label,dataType:type==='multipicklist'?'multipicklist':type==='datetime'?'datetime':type==='currency'?'currency':type==='percent'?'percent':type,referenceTo:Array.isArray(f.referenceTo)?f.referenceTo:[],picklistValues:Array.isArray(f.picklistValues)?f.picklistValues.filter(x=>x?.active!==false).map(x=>({value:x.value, label:x.label||x.value, validFor:x.validFor})):[]};}
@@ -168,9 +264,37 @@
     const info=metadataState.objectCache.get(obj)?.objectInfo,infos=info?.recordTypeInfos;if(info?.defaultRecordTypeId)return String(info.defaultRecordTypeId);if(infos&&typeof infos==='object'){const x=Object.values(infos).find(v=>v?.defaultRecordTypeMapping||v?.isDefaultMapping);if(x?.recordTypeId)return String(x.recordTypeId);const y=Object.values(infos).find(v=>v?.recordTypeId);if(y?.recordTypeId)return String(y.recordTypeId)}return'012000000000000AAA';
   };
   FP.getPicklistOptions=async(objectApiName,fieldApiName,recordId='')=>{if(!objectApiName||!fieldApiName)return[];await FP.loadSalesforceMetadata(objectApiName,recordId).catch(()=>null);const rt=await FP.getRecordTypeId(objectApiName,recordId);return FP.loadFieldPicklistValues(objectApiName,rt,fieldApiName)};
-  FP.loadFieldPicklistValues=async(objectApiName,recordTypeId,fieldApiName)=>{if(!FP.isSalesforceHost()||!objectApiName||!fieldApiName)return[];const v=await getApiVersion();const rt=recordTypeId||'012000000000000AAA';const urls=[];if(v)urls.push(`/services/data/v${v}/ui-api/object-info/${encodeURIComponent(objectApiName)}/picklist-values/${encodeURIComponent(rt)}/${encodeURIComponent(fieldApiName)}`);urls.push(`/services/data/latest/ui-api/object-info/${encodeURIComponent(objectApiName)}/picklist-values/${encodeURIComponent(rt)}/${encodeURIComponent(fieldApiName)}`);for(const url of urls){try{const r=await fetch(url,{credentials:'include',cache:'no-store'});if(!r.ok)continue;const data=await r.json();if(Array.isArray(data?.values))return data.values.filter(x=>x?.active!==false).map(x=>({value:x.value,displayValue:x.label||x.value,validFor:x.validFor}));}catch{}}return[]};
+  FP.loadFieldPicklistData=async(objectApiName,recordTypeId,fieldApiName)=>{if(!FP.isSalesforceHost()||!objectApiName||!fieldApiName)return null;const v=await getApiVersion();const rt=recordTypeId||'012000000000000AAA';const urls=[];if(v)urls.push(`/services/data/v${v}/ui-api/object-info/${encodeURIComponent(objectApiName)}/picklist-values/${encodeURIComponent(rt)}/${encodeURIComponent(fieldApiName)}`);urls.push(`/services/data/latest/ui-api/object-info/${encodeURIComponent(objectApiName)}/picklist-values/${encodeURIComponent(rt)}/${encodeURIComponent(fieldApiName)}`);for(const url of urls){try{const r=await fetch(url,{credentials:'include',cache:'no-store'});if(!r.ok)continue;const data=await r.json();if(Array.isArray(data?.values))return{controllerValues:data.controllerValues&&typeof data.controllerValues==='object'?data.controllerValues:{},defaultValue:data.defaultValue||null,values:data.values.filter(x=>x?.active!==false).map(x=>({value:x.value,displayValue:x.label||x.value,active:x.active!==false,validFor:Array.isArray(x.validFor)?x.validFor.slice():x.validFor}))};}catch{}}return null};
+  // Keep the legacy array API for callers that only need labels/values, while the
+  // dependency-aware API above retains UI API validFor/controllerValues metadata.
+  FP.loadFieldPicklistValues=async(objectApiName,recordTypeId,fieldApiName)=>{const data=await FP.loadFieldPicklistData(objectApiName,recordTypeId,fieldApiName);return data?.values||[]};
   FP.getFieldMetadata=(api,objectApiName)=>{const fields=objectApiName?metadataState.objectFieldMetadata.get(String(objectApiName)):metadataState.fieldMetadata;return fields?.get(api)||null};
-  FP.resolveFieldMetadata=({objectApiName,apiName,name,label,fieldPath})=>{const fields=objectApiName?metadataState.objectFieldMetadata.get(String(objectApiName)):metadataState.fieldMetadata;if(!fields)return null;for(const candidate of [apiName,name,fieldPath]){if(candidate&&fields.has(candidate))return{apiName:candidate,meta:fields.get(candidate)}}const n=FP.normalizeLabel(label);if(!n)return null;const matches=[];for(const [api,meta] of fields){if(FP.normalizeLabel(meta?.label)===n)matches.push({apiName:api,meta})}return matches.length===1?matches[0]:null};
+  FP.resolveFieldMetadata=({objectApiName,apiName,name,label,fieldPath,kind,allowLabelFallback=true})=>{const fields=objectApiName?metadataState.objectFieldMetadata.get(String(objectApiName)):metadataState.fieldMetadata;if(!fields)return null;for(const candidate of [apiName,name,fieldPath]){if(candidate&&fields.has(candidate))return{apiName:candidate,meta:fields.get(candidate)}}if(!allowLabelFallback)return null;const n=FP.normalizeLabel(label);if(!n)return null;const matches=[];for(const [api,meta] of fields){if(FP.normalizeLabel(meta?.label)===n)matches.push({apiName:api,meta})}if(matches.length===1)return matches[0];
+    // Generic disambiguation for Salesforce forms that omit the field API name
+    // on the outer Lightning component. Use the already-detected live control
+    // kind only when exactly one metadata field of that label matches it.
+    if(kind&&matches.length>1){
+      const compatible=matches.filter(({meta})=>{
+        const t=String(meta?.dataType||meta?.type||'').toLowerCase();
+        if(kind==='lookup')return t==='reference';
+        if(kind==='picklist')return t==='picklist';
+        if(kind==='multi-picklist')return t==='multipicklist';
+        if(kind==='boolean')return t==='boolean';
+        if(kind==='number')return ['currency','percent','double','int','integer','long','decimal','number'].includes(t);
+        if(kind==='date')return t==='date';
+        if(kind==='datetime')return t==='datetime';
+        if(kind==='time')return t==='time';
+        if(kind==='email')return t==='email';
+        if(kind==='phone')return t==='phone';
+        if(kind==='url')return t==='url';
+        if(kind==='longText')return ['textarea','longtextarea','richtext'].includes(t);
+        if(kind==='address')return ['address','string'].includes(t);
+        return ['string','text'].includes(t);
+      });
+      if(compatible.length===1)return compatible[0];
+    }
+    return null;
+  };
   FP.resolveDatatableContext=node=>{
     if(!node)return null;
     const hosts=FP.collectComponentHosts(node);
@@ -189,12 +313,38 @@
     return(fieldApiName||columnKey)?{grid,columnKey,fieldApiName:fieldApiName||undefined,label:label||undefined,colIndex:colIndex||undefined}:null;
   };
 
-  FP.readLookupId=(host,el)=>{for(const node of [host,el].filter(Boolean)){for(const a of ['data-record-id','data-recordid','data-record-id-value','data-id','record-id','data-lookup-id','data-selection-id','data-value','value']){try{const v=node.getAttribute?.(a);if(v&&/^[A-Za-z0-9]{15,18}$/.test(String(v).trim()))return String(v).trim()}catch{}}for(const prop of ['recordId','recordID','lookupId','selectedRecordId','value']){try{const v=node?.[prop];if(v&&typeof v==='string'&&/^[A-Za-z0-9]{15,18}$/.test(v.trim()))return v.trim()}catch{}}try{const nested=node.querySelector?.('[data-record-id],[data-recordid],[data-record-id-value],[data-id],[record-id],[data-lookup-id],[data-selection-id],[data-value],[aria-selected="true"] a,[aria-selected="true"]');if(nested){const x=FP.readLookupId(nested,nested);if(x)return x}}catch{}}return''};
+  FP.readLookupId=(host,el)=>{
+    const idPattern=/^[A-Za-z0-9]{15,18}$/;
+    const classic=FP.classicLookupParts?.(host,el);
+    if(classic){const value=String(classic.idInput?.value||'').trim();if(idPattern.test(value)&&!/^0+$/.test(value))return value;}
+    const nodes=[],seen=new Set();const add=n=>{if(n&&!seen.has(n)){seen.add(n);nodes.push(n)}};
+    add(host);add(el);
+    // Salesforce keeps selected lookup IDs on internal Lightning hosts in some
+    // releases, while other releases expose only the readonly display input. Walk
+    // this field's shadow roots and component hosts so the ID is captured at record
+    // time and can disambiguate same-name results during future Autofill runs.
+    for(const root of [host,el].filter(Boolean)){
+      try{for(const n of FP.deepQueryAll(root,'lightning-lookup,lightning-record-picker,lightning-base-combobox[data-lookup],records-record-layout-lookup,[data-record-id],[data-recordid],[data-record-id-value],[data-selected-record],[data-selection-id]',100))add(n)}catch{}
+    }
+    for(const node of nodes){
+      for(const a of ['data-record-id','data-recordid','data-record-id-value','data-id','record-id','data-lookup-id','data-selection-id','data-value','value']){
+        try{const v=node.getAttribute?.(a);if(v&&idPattern.test(String(v).trim()))return String(v).trim()}catch{}
+      }
+      for(const prop of ['recordId','recordID','lookupId','selectedRecordId','value']){
+        try{
+          const v=node?.[prop];
+          if(typeof v==='string'&&idPattern.test(v.trim()))return v.trim();
+          if(v&&typeof v==='object')for(const key of ['recordId','recordID','id','value']){const nested=v[key];if(typeof nested==='string'&&idPattern.test(nested.trim()))return nested.trim()}
+        }catch{}
+      }
+    }
+    return'';
+  };
   FP.readAddressParts=host=>{if(String(host?.tagName||'').toLowerCase()!=='lightning-input-address'&&!host?.hasAttribute?.('data-sf-address'))return null;const out={};const aliases={street:['street'],city:['city'],province:['province','state'],country:['country'],postalCode:['postalcode','postal-code','zip']};for(const [k,names] of Object.entries(aliases)){let found=null;for(const root of [host,host?.shadowRoot].filter(Boolean)){for(const n of names){for(const s of [`input[name="${n}"]`,`textarea[name="${n}"]`,`[data-field-name="${n}"]`,`[data-name="${n}"]`,`[data-address-part="${k}"]`,`[autocomplete*="${n}"]`]){try{found=root.querySelector?.(s);if(found)break}catch{}}if(found)break}if(found)break}if(found){const v=FP.normalizeText(found.value??found.textContent);if(v)out[k]=v}}return Object.keys(out).length?out:null};
   FP.readMultiSelectValue=d=>{
     const host=d?.host||d,el=d?.element||FP.controlForField(host);
     const clean=arr=>[...new Set((arr||[]).map(FP.normalizeText).filter(v=>v&&!FP.isMultiPicklistPlaceholder(v)))];
-    if(el?.tagName?.toLowerCase()==='select'&&el.multiple)return clean([...el.selectedOptions].map(o=>o.value||o.textContent)).join('; ');
+    if(el?.tagName?.toLowerCase()==='select'&&el.multiple)return clean([...el.selectedOptions].map(o=>FP.normalizeText(o.textContent||o.label||o.value))).join('; ');
     const dual=host?.tagName?.toLowerCase()==='lightning-dual-listbox'?host:FP.deepQueryFirst(host,'lightning-dual-listbox');
     if(dual){
       const lists=[];
@@ -218,6 +368,7 @@
     if(kind==='address')return FP.readAddressParts(host)||{};
     if(kind==='boolean'){if(el?.type==='checkbox')return!!el.checked;return(el?.getAttribute?.('aria-checked')||host?.getAttribute?.('aria-checked'))==='true'}
     if(kind==='multi-picklist')return FP.readMultiSelectValue(d);
+    if(kind==='picklist'&&String(el?.tagName||'').toLowerCase()==='select'){const option=el.selectedOptions?.[0]||el.options?.[el.selectedIndex];const label=FP.normalizeText(option?.textContent||option?.label||'');return FP.isPicklistPlaceholder(label)?'':label;}
     if(kind==='date'){
       const dateInput=FP.deepQueryFirst(host,'input[type="date"],input[role="textbox"],input:not([type="hidden"])')||el;
       const raw=dateInput?.value!==undefined&&typeof dateInput.value!=='object'?dateInput.value:(host?.value!==undefined&&typeof host.value!=='object'?host.value:'');
@@ -235,24 +386,61 @@
       }
       if(!display){try{const input=FP.deepQueryFirst(host,'input[role="combobox"]');display=FP.normalizeText(input?.dataset?.lookupLabel||input?.value||'');recordId=recordId||FP.readLookupId(input,input)||''}catch{}}
       if(!display){try{const pill=FP.deepQueryFirst(host,'lightning-pill,[data-selection-index],[data-selected-record]');display=FP.normalizeText(pill?.textContent||pill?.getAttribute?.('title')||'')}catch{}}
+      if(!display){try{const classic=FP.classicLookupParts?.(host,el);if(classic)display=FP.normalizeText(classic.input?.value||'')}catch{}}
       return{displayValue:display,recordId};
     }
     if(kind==='picklist'){
-      const nativeSelect=/^select$/i.test(String(el?.tagName||''))?el:null;
-      const trigger=nativeSelect||FP.deepQueryFirst(host,'button[role="combobox"],input[role="combobox"],[role="combobox"]');
-      const raw=trigger?.value!==undefined&&typeof trigger.value!=='object'&&trigger.value!==''?trigger.value:(trigger?.getAttribute?.('data-value')||el?.getAttribute?.('data-value')||host?.getAttribute?.('data-value')||'');
-      if(raw)return FP.isPicklistPlaceholder(raw)?'':String(raw);
-      const sel=FP.deepQueryFirst(host,'[role="option"][aria-selected="true"],option:checked');
-      if(sel){const v=sel.value||FP.normalizeText(sel.textContent);return FP.isPicklistPlaceholder(v)?'':v}
-      if(trigger){
-        const triggerText=FP.normalizeText(trigger?.getAttribute?.('aria-label')||trigger?.getAttribute?.('title')||trigger?.textContent||'');
-        return FP.isPicklistPlaceholder(triggerText)?'':triggerText;
+      const nativeSelect=String(el?.tagName||'').toLowerCase()==='select'?el:null;
+      if(nativeSelect){const option=nativeSelect.selectedOptions?.[0]||nativeSelect.options?.[nativeSelect.selectedIndex];const label=FP.normalizeText(option?.label||option?.textContent||'');return FP.isPicklistPlaceholder(label)?'':label;}
+      const comboSelector='button[role="combobox"],input[role="combobox"],[role="combobox"],button[aria-haspopup="listbox"],input[aria-haspopup="listbox"],[aria-haspopup="listbox"]';
+      const trigger=(el?.matches?.(comboSelector)?el:null)||(host?.matches?.(comboSelector)?host:null)||FP.deepQueryFirst(host,comboSelector)||el;
+      const norm=FP.normalizeLabel;
+      const opaqueId=v=>/^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/.test(String(v||'').trim());
+      const labelNorm=norm(d?.label||'');
+      const cleanCandidate=value=>{
+        const text=FP.normalizeText(value);
+        if(!text||text.length>180||FP.isPicklistPlaceholder(text)||opaqueId(text))return '';
+        const n=norm(text);
+        // Never record the field wrapper (label + help text + all option labels) as
+        // the selected value. This is common when reading an Aura/LWC host's textContent.
+        if(/help\s*info/i.test(text))return '';
+        if(labelNorm&&n===labelNorm)return '';
+        if(labelNorm&&n.startsWith(labelNorm)&&n.length>labelNorm.length+8)return '';
+        return text;
+      };
+      const rawCandidates=[];
+      for(const node of [trigger,el,host].filter(Boolean)){
+        try{if(typeof node.value==='string'&&node.value.trim())rawCandidates.push(node.value.trim())}catch{}
+        for(const attr of ['data-value','value']){try{const v=node.getAttribute?.(attr);if(v&&String(v).trim())rawCandidates.push(String(v).trim())}catch{}}
       }
-      // Some Salesforce picklist wrappers expose only their selected label. Accept it
-      // only when it exactly matches a known option; never treat the whole field
-      // container (label + help text + placeholder) as a field value.
-      const hostText=FP.normalizeText(host?.textContent||'');
-      if(hostText&&Array.isArray(d?.options)&&d.options.some(o=>{const n=FP.normalizeLabel(hostText);return n===FP.normalizeLabel(o?.value)||n===FP.normalizeLabel(o?.displayValue)||n===FP.normalizeLabel(o?.label)}))return hostText;
+      // If the control exposes its underlying option value, map it before trying the visual label.
+      for(const raw of rawCandidates){
+        const mapped=(d?.options||[]).find(o=>norm(o?.value)===norm(raw));
+        if(mapped?.displayValue&&!FP.isPicklistPlaceholder(mapped.displayValue))return FP.normalizeText(mapped.displayValue);
+      }
+      // Read selected-value affordances only within the actual combobox trigger.
+      // Searching the whole field host can concatenate field label, help text and menu options.
+      const candidates=[];
+      if(trigger){
+        for(const attr of ['aria-valuetext','data-selected-label','data-label']){try{const v=trigger.getAttribute?.(attr);if(v)candidates.push(v)}catch{}}
+        try{FP.deepQueryAll(trigger,'[data-selected-label],[aria-valuetext],[part="input-text"],.slds-combobox__input-value,.slds-truncate',40).forEach(node=>{
+          for(const attr of ['data-selected-label','aria-valuetext','data-label','title']){try{const v=node.getAttribute?.(attr);if(v)candidates.push(v)}catch{}}
+          try{if(node.childElementCount===0||String(node.tagName||'').toLowerCase()==='lightning-base-combobox-formatted-text')candidates.push(node.textContent||'')}catch{}
+        })}catch{}
+      }
+      for(const candidate of candidates){
+        const text=cleanCandidate(candidate);if(!text)continue;
+        const known=(d?.options||[]).find(o=>norm(o?.displayValue)===norm(text)||norm(o?.value)===norm(text));
+        if(known?.displayValue)return FP.normalizeText(known.displayValue);
+        return text;
+      }
+      for(const raw of rawCandidates){
+        if(!raw)continue;
+        if(opaqueId(raw))return raw; // Keep an opaque value for metadata-based recovery during replay.
+        const text=cleanCandidate(raw);if(text)return FP.isPicklistPlaceholder(text)?'':text;
+      }
+      // Do not fall back to trigger.textContent/host.textContent: these can contain the
+      // label, help text, and dropdown options in some Lightning pages.
       return '';
     }
     if(el?.value!==undefined&&typeof el.value!=='object')return el.value;
@@ -285,7 +473,41 @@
     if(typeof v==='string')return !v.trim();
     return false;
   };
-  FP.readOptions=(host,el)=>{const out=[],seen=new Set();const add=o=>{if(!o||seen.has(o))return;const value=o.getAttribute?.('data-value')??o.getAttribute?.('value')??o.value;const text=FP.normalizeText(o.getAttribute?.('data-label')||o.textContent||o.getAttribute?.('title')||'');const v=value!=null&&String(value).trim()?String(value).trim():text;const normalized=FP.normalizeLabel(text).replace(/[–—]/g,'-').replace(/\s+/g,' ');const placeholder=['-none-','--none--','select','select an option','choose','choose an option','select option','--select--'].includes(normalized);if(!v||!text||placeholder)return;const k=`${v}::${text}`;if(!seen.has(k)){seen.add(k);out.push({value:v,displayValue:text})}};if(el?.tagName==='SELECT')Array.from(el.options).forEach(add);for(const r of [host,host?.shadowRoot].filter(Boolean))FP.deepQueryAll(r,'option,[role="option"],lightning-base-combobox-item,.slds-listbox__option',300).forEach(add);return out};
+  FP.readOptions=(host,el)=>{
+    const out=[],seen=new Set();
+    const add=(o,native=false)=>{
+      if(!o)return;
+      const tag=String(o.tagName||'').toLowerCase();
+      let value='';try{value=String(o.getAttribute?.('data-value')??o.getAttribute?.('value')??o.value??'').trim()}catch{}
+      let text='';
+      if(native||tag==='option'){
+        try{text=FP.normalizeText(o.label||o.textContent||o.getAttribute?.('label')||'')}catch{}
+      }else{
+        // Lightning's option host may include secondary metadata. Prefer the primary label node.
+        for(const selector of ['[part="option-text"]','.slds-listbox__option-text','lightning-base-combobox-formatted-text','[data-option-label]','[data-label]']){
+          try{const n=FP.deepQueryFirst(o,selector);const t=FP.normalizeText(n?.getAttribute?.('title')||n?.getAttribute?.('data-label')||n?.textContent||'');if(t){text=t;break}}catch{}
+        }
+        if(!text){for(const attr of ['data-label','label','aria-label','title']){try{const t=FP.normalizeText(o.getAttribute?.(attr)||'');if(t){text=t;break}}catch{}}}
+        if(!text&&o.matches?.('[role="option"]')){try{text=FP.normalizeText(o.textContent||'')}catch{}}
+      }
+      if(!value)value=text;
+      const normalized=FP.normalizeLabel(text).replace(/[–—]/g,'-').replace(/\s+/g,' ');
+      const placeholder=['-none-','--none--','select','select an option','choose','choose an option','select option','--select--'].includes(normalized);
+      if(!value||!text||placeholder||/help\s*info/i.test(text)||/^action[A-Z]/.test(value))return;
+      if(FP.normalizeLabel(text)===FP.normalizeLabel(FP.resolveFieldLabel?.(host,el)||''))return;
+      const k=`${FP.normalizeLabel(value)}::${FP.normalizeLabel(text)}`;
+      if(!seen.has(k)){seen.add(k);out.push({value,displayValue:text})}
+    };
+    if(String(el?.tagName||'').toLowerCase()==='select'){
+      Array.from(el.options||[]).forEach(o=>add(o,true));
+      return out;
+    }
+    // Only collect real option rows, not the trigger or generic text wrappers.
+    for(const root of [host,host?.shadowRoot].filter(Boolean)){
+      try{FP.deepQueryAll(root,'option,[role="option"],lightning-base-combobox-item[data-value]',300).forEach(o=>add(o,false))}catch{}
+    }
+    return out;
+  };
   FP.inferFormattedNumericType=(host,el)=>{
     try{
       if(!host&&!el)return '';
@@ -347,14 +569,53 @@
       if(targetSelectionName)break;
     }
     const parsed=FP.parseTargetSelectionName(targetSelectionName);
-    if(parsed){objectApiName=parsed.objectApiName;fieldPath=parsed.fieldPath;apiName=parsed.apiName}
+    let labelHint='';
+    if(parsed){objectApiName=parsed.objectApiName;fieldPath=parsed.fieldPath;apiName=parsed.apiName;labelHint=parsed.labelHint||''}
     if(!objectApiName){
       for(const n of hosts){try{const v=n.getAttribute?.('data-sf-object');if(v){objectApiName=FP.normalizeText(v);break}}catch{}}
     }
     if(!objectApiName){try{objectApiName=document.documentElement.dataset.sfObject||document.querySelector?.('[data-sf-object]')?.getAttribute?.('data-sf-object')||''}catch{}}
-    if(!apiName&&fieldPath&&!fieldPath.includes('__r__'))apiName=fieldPath;
+    // Generic fallback for Salesforce pages/components that do not expose the
+    // object through the route, Record target, or data-sf-object. The active
+    // TabDefinition / New action is an object-level context signal and is only
+    // used after stronger field/route identity has failed.
+    if(!objectApiName){
+      try{
+        const activeTab=[...document.querySelectorAll('[data-target-selection-name^="sfdc:TabDefinition."]')]
+          .find(el=>el.matches?.('.slds-is-active,[aria-current="page"]')||el.querySelector?.('[aria-current="page"]'));
+        const raw=String(activeTab?.getAttribute?.('data-target-selection-name')||'');
+        const m=raw.match(/^sfdc:TabDefinition\.([^.]*)$/i);
+        if(m?.[1])objectApiName=FP.normalizeText(m[1]);
+      }catch{}
+    }
+    if(!objectApiName){
+      try{
+        const news=[...document.querySelectorAll('[data-target-selection-name^="sfdc:StandardButton."]')]
+          .slice(0,24);
+        for(const el of news){
+          const raw=String(el.getAttribute?.('data-target-selection-name')||'');
+          const m=raw.match(/^sfdc:StandardButton\.([^.]+)\.New$/i);
+          if(m?.[1]){objectApiName=FP.normalizeText(m[1]);break;}
+        }
+      }catch{}
+    }
+    if(!apiName&&fieldPath&&!fieldPath.includes('__r__')&&!/^label:/i.test(fieldPath))apiName=fieldPath;
+    if(!apiName){
+      const isLikelyFieldName=v=>{const x=FP.normalizeText(v);if(!x||/^(input|button|field|textbox|combobox|label|label-end|search|submit)$/i.test(x))return false;return /^[A-Za-z][A-Za-z0-9]*(?:__[A-Za-z0-9]+)*$/.test(x)};
+      try{
+        const candidates=[
+          'input[name]','textarea[name]','select[name]','button[name]','[role="combobox"][name]',
+          '[data-field-name]','[data-field-api-name]','[data-sf-field]','[data-api-name]','[data-name]'
+        ];
+        for(const selector of candidates){
+          const found=FP.deepQueryFirst(node,selector);if(!found)continue;
+          const v=found.getAttribute?.('data-field-name')||found.getAttribute?.('data-field-api-name')||found.getAttribute?.('data-sf-field')||found.getAttribute?.('data-api-name')||found.getAttribute?.('data-name')||found.getAttribute?.('name')||'';
+          if(isLikelyFieldName(v)){apiName=FP.normalizeText(v);break;}
+        }
+      }catch{}
+    }
     const datatable=FP.resolveDatatableContext(node);if(!apiName&&datatable?.fieldApiName)apiName=datatable.fieldApiName;
-    return{targetSelectionName:targetSelectionName||undefined,fieldId:fieldId||undefined,objectApiName:objectApiName||undefined,fieldPath:fieldPath||undefined,apiName:apiName||undefined,datatable};
+    return{targetSelectionName:targetSelectionName||undefined,fieldId:fieldId||undefined,objectApiName:objectApiName||undefined,fieldPath:fieldPath||undefined,apiName:apiName||undefined,labelHint:labelHint||undefined,datatable};
   };
   FP.describeField=host0=>{
     if(!host0)return null;
@@ -365,9 +626,10 @@
     const el=FP.controlForField(host),label=FP.resolveFieldLabel(host,el);if(!label)return null;
     const ctx=FP.resolveFieldContext(host);
     const tag=String(host.tagName||'').toLowerCase();
-    const rawApi=ctx?.apiName||host.getAttribute?.('field-name')||host.getAttribute?.('fieldName')||host.getAttribute?.('data-field-name')||host.getAttribute?.('data-field')||host.getAttribute?.('data-sf-field')||el?.getAttribute?.('data-field-name')||el?.getAttribute?.('data-sf-field')||el?.name||null;
+    const rawApi=ctx?.apiName||host.getAttribute?.('field-name')||host.getAttribute?.('fieldName')||host.getAttribute?.('data-field-name')||host.getAttribute?.('data-field')||host.getAttribute?.('data-sf-field')||el?.getAttribute?.('data-field-name')||el?.getAttribute?.('data-field-api-name')||el?.getAttribute?.('data-sf-field')||el?.getAttribute?.('data-api-name')||el?.getAttribute?.('data-name')||el?.name||null;
     const name=el?.getAttribute?.('name')||host.getAttribute?.('name')||null;
-    const resolved=FP.resolveFieldMetadata({objectApiName:ctx?.objectApiName,apiName:rawApi,name,label,fieldPath:ctx?.fieldPath});
+    const domKind=FP.controlKind(host,el);
+    const resolved=FP.resolveFieldMetadata({objectApiName:ctx?.objectApiName,apiName:rawApi,name,label,fieldPath:ctx?.fieldPath,kind:domKind});
     const meta=resolved?.meta||null,apiName=resolved?.apiName||rawApi||name||undefined;
 
     const explicitFieldType=String(host.getAttribute?.('data-field-type')||host.getAttribute?.('field-type')||el?.getAttribute?.('data-field-type')||el?.getAttribute?.('field-type')||host.getAttribute?.('data-sf-type')||el?.getAttribute?.('data-sf-type')||'').toLowerCase();
@@ -375,7 +637,6 @@
     for(const n of [host,el,...FP.collectComponentHosts(host)]){for(const a of ['formatter','data-formatter','data-field-formatter','data-sf-type']){try{const v=n?.getAttribute?.(a);if(v)formatterCandidates.push(String(v).toLowerCase())}catch{}}for(const p of ['formatter','fieldType','dataType','type']){try{const v=n?.[p];if(typeof v==='string')formatterCandidates.push(v.toLowerCase())}catch{}}}
     const formatter=formatterCandidates.find(v=>['currency','percent','date','datetime','time','number','double','picklist','multipicklist','boolean','reference'].includes(v))||'';
 
-    const domKind=FP.controlKind(host,el);
     const metaType=String(meta?.dataType||'').toLowerCase();
     const explicitKind=FP.semanticKindFromSalesforceType(explicitFieldType);
     const metaKind=FP.semanticKindFromSalesforceType(metaType);
@@ -415,15 +676,17 @@
     let options=[];
     if(kind==='picklist'||multi||el?.tagName==='SELECT'){
       const live=FP.readOptions(host,el);
-      options=live.length?live:(Array.isArray(meta?.picklistValues)?meta.picklistValues.filter(o=>o?.active!==false).map(o=>({value:o.value,displayValue:o.label||o.value})):[]);
+      options=live.length?live:(Array.isArray(meta?.picklistValues)?meta.picklistValues.filter(o=>o?.active!==false).map(o=>({value:o.value,displayValue:o.label||o.value,active:o.active!==false,validFor:o.validFor})):[]);
     }
 
-    const identitySource=ctx?.targetSelectionName?'target-selection':apiName?'field-api':name?'native-name':label?'label':'';
-    const key=FP.chooseStableFieldKey({objectApiName:ctx?.objectApiName,apiName,name,label,targetSelectionName:ctx?.targetSelectionName,fieldPath:ctx?.fieldPath});
+    const identitySource=ctx?.targetSelectionName&&apiName?'target-selection':apiName?'field-api':name?'native-name':label?'label':'';
+    const stableTargetSelection=(ctx?.targetSelectionName&&apiName&&!ctx?.labelHint)?ctx.targetSelectionName:undefined;
+    const key=FP.chooseStableFieldKey({objectApiName:ctx?.objectApiName,apiName,name,label,targetSelectionName:stableTargetSelection,fieldPath:ctx?.fieldPath});
     const d={
       key,label:FP.normalizeText(meta?.label||label),apiName,name:name||undefined,
       type:exactType||kind,kind,fieldType:exactType||kind,reference,multiSelect:multi,
       referenceObject:meta?.referenceTo?.[0],referenceId:FP.readLookupId(host,el)||undefined,
+      controllerName:meta?.controllerName||meta?.controllerField||undefined,controllingFields:Array.isArray(meta?.controllingFields)?meta.controllingFields.slice():undefined,
       host,element:el,options,readOnly:FP.isReadOnly(host,el),disabled:FP.isDisabled(host,el),
       sfDataType:exactType||undefined,metadataBacked:!!meta,updateable:meta?.updateable!==false,
       createable:meta?.createable!==false,required:meta?.required===true,
@@ -449,10 +712,20 @@
       const tag=String(h.tagName||'').toLowerCase();
       const type=String(h.getAttribute?.('type')||'').toLowerCase();
       if(type==='range')return;
-      const fieldContainer=FP.collectComponentHosts(h).some(n=>n?.matches?.('[data-target-selection-name^=\"sfdc:RecordField.\"],[data-field-id],record_flexipage-record-field,flexipage-field,lightning-input-field,[data-sf-field],[data-sf-address]'));
+      const fieldContainer=FP.collectComponentHosts(h).some(n=>n?.matches?.('[data-target-selection-name^="sfdc:RecordField."],[data-field-id],record_flexipage-record-field,flexipage-field,lightning-input-field,[data-sf-field],[data-sf-address]'));
       const rawTS=String(h.getAttribute?.('data-target-selection-name')||'');
       if(rawTS && !/^sfdc:RecordField\./i.test(rawTS) && !fieldContainer)return;
-      if(!fieldContainer && !['lightning-input-field','lightning-input','lightning-lookup','lightning-record-picker','lightning-combobox','lightning-textarea','lightning-dual-listbox','lightning-input-address','lightning-timepicker','lightning-date-picker','lightning-datepicker'].includes(tag))return;
+      // Classic Salesforce record edits expose controls directly inside form#editPage
+      // rather than through Lightning field wrappers. Support only editable controls
+      // inside known Classic edit forms; avoid broad capture of unrelated inputs.
+      let classicEditControl=false;
+      try{
+        const form=h.closest?.('form#editPage,form[name="editPage"],form#userEditPage,form[name="userEditPage"]');
+        const editMarkup=!!(form&&(form.querySelector?.('.bEditBlock,table.detailList,#ep')||/(?:^|\/)e(?:\?|$)/i.test(String(form.getAttribute?.('action')||''))));
+        const inputType=String(h.getAttribute?.('type')||'').toLowerCase();
+        classicEditControl=editMarkup&&['input','textarea','select'].includes(tag)&&!['hidden','submit','button','reset','image','file','range'].includes(inputType);
+      }catch{}
+      if(!fieldContainer && !classicEditControl && !['select','lightning-input-field','lightning-input','lightning-lookup','lightning-record-picker','lightning-combobox','lightning-textarea','lightning-dual-listbox','lightning-input-address','lightning-timepicker','lightning-date-picker','lightning-datepicker'].includes(tag))return;
       const d=FP.describeField(h);
       if(!d||!d.label||FP.isNoiseField(d))return;
       const idx=seen.get(d.key);
@@ -491,7 +764,7 @@
     if(values.length>MAX_RECORDINGS||!values.every(x=>x&&typeof x==='object'&&typeof x.id==='string'&&/^[A-Za-z0-9_-]{8,120}$/.test(x.id)&&Array.isArray(x.steps)&&x.steps.length<=MAX_STEPS))throw new Error('Recording data is too large or invalid.');
     return chrome.storage.local.set({[FP.STORAGE_KEY]:sanitized});
   };
-  FP.getSettings=async()=>{const d=await chrome.storage.local.get(FP.SETTINGS_KEY);const raw=d[FP.SETTINGS_KEY]&&typeof d[FP.SETTINGS_KEY]==='object'?d[FP.SETTINGS_KEY]:{};const defaults={stopOnFailure:false,verifyAfterReplay:true,fillEmptyOnly:true,showOverlay:true,launcherMode:'edge',dateRelativeToToday:true,darkMode:false};for(const k of Object.keys(defaults))if(k in raw)defaults[k]=Boolean(raw[k]);const legacyMode=String(raw.launcherMode||'');if(legacyMode==='current')defaults.launcherMode='bubble';else if(['bubble','edge','off'].includes(legacyMode))defaults.launcherMode=legacyMode;else if(raw.showOverlay===false)defaults.launcherMode='off';return defaults};
+  FP.getSettings=async()=>{const d=await chrome.storage.local.get(FP.SETTINGS_KEY);const raw=d[FP.SETTINGS_KEY]&&typeof d[FP.SETTINGS_KEY]==='object'?d[FP.SETTINGS_KEY]:{};const defaults={stopOnFailure:false,verifyAfterReplay:true,fillEmptyOnly:true,showOverlay:true,launcherMode:'edge',darkMode:false};for(const k of Object.keys(defaults))if(k in raw)defaults[k]=Boolean(raw[k]);const legacyMode=String(raw.launcherMode||'');if(legacyMode==='current')defaults.launcherMode='bubble';else if(['bubble','edge','off'].includes(legacyMode))defaults.launcherMode=legacyMode;else if(raw.showOverlay===false)defaults.launcherMode='off';return defaults};
   FP.saveSettings=async s=>chrome.storage.local.set({[FP.SETTINGS_KEY]:s});
   FP.makeRecordingName=c=>{
     const label=FP.normalizeText(c?.objectLabel||c?.objectLabelPlural||'');

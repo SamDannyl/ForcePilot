@@ -12,16 +12,16 @@ import { applyTheme, watchTheme } from './src/theme.js';
 import { showToast } from './src/toast.js';
 const DEFAULTS={...DEFAULT_SETTINGS};
 const app=document.getElementById('app');
-let recordings={},selectedId=null,settings={...DEFAULTS},editing=false,draft=null,snapshot=null,activeSection='recordings',recordingSearch='',fieldSearch='',pendingConfirmation=null,pendingImport=null;
+let recordings={},selectedId=null,settings={...DEFAULTS},editing=false,draft=null,snapshot=null,activeSection='recordings',recordingSearch='',fieldSearch='',pendingConfirmation=null,pendingImport=null,expandedRandomKey=null;
 
 const clone=v=>JSON.parse(JSON.stringify(v));
 const cleanNumber=v=>{const m=String(v??'').replace(/,/g,'').match(/-?\d+(?:\.\d+)?/);return m?String(Number(m[0])):String(v??'').trim()};
 const rawTypes=s=>[s?.target?.fieldType,s?.target?.sfDataType,s?.target?.salesforceType,s?.target?.type].map(v=>String(v||'').toLowerCase()).filter(Boolean);
-const normalizeType=s=>{const r=rawTypes(s).find(v=>!['text','string','field','input'].includes(v))||String(s?.target?.kind||'').toLowerCase();if(r==='boolean'||r==='checkbox'||s?.target?.kind==='boolean')return'checkbox';if(r.includes('multi')||r==='multipicklist'||s?.target?.kind==='multi-picklist')return'multipicklist';if(r.includes('picklist')||r==='combobox'||s?.target?.kind==='picklist')return'picklist';if(r==='date'||s?.target?.kind==='date')return'date';if(r==='datetime'||r==='date/time'||s?.target?.kind==='datetime')return'datetime';if(r==='time'||s?.target?.kind==='time')return'time';if(r==='reference'||r==='lookup'||s?.target?.reference||s?.target?.kind==='lookup')return'lookup';if(['currency','percent','double','int','integer','long','decimal','number'].includes(r)||r.includes('number')||s?.target?.kind==='number')return'number';return'text'};
-const typeLabel=s=>{const raws=rawTypes(s);if(raws.includes('currency'))return'Currency';if(raws.includes('percent'))return'Percent';const t=normalizeType(s);return({checkbox:'Checkbox',picklist:'Picklist',multipicklist:'Multipicklist',text:'Text',number:'Number',date:'Date',datetime:'Date/Time',time:'Time',lookup:'Lookup'}[t]||'Text')};
+const normalizeType=s=>{const raws=rawTypes(s),kind=String(s?.target?.kind||'').toLowerCase();const specific=raws.find(v=>!['text','string','field','input',''].includes(v));const r=specific||kind||raws[0]||'';if(r==='boolean'||r==='checkbox'||kind==='boolean')return'checkbox';if(r.includes('multi')||r==='multipicklist'||kind==='multi-picklist')return'multipicklist';if(r.includes('picklist')||r==='combobox'||kind==='picklist')return'picklist';if(r==='date'||kind==='date')return'date';if(['datetime','date/time','date-time'].includes(r)||kind==='datetime')return'datetime';if(r==='time'||kind==='time')return'time';if(r==='address'||kind==='address'||s?.target?.compoundType==='address')return'address';if(r==='email'||kind==='email')return'email';if(r==='phone'||kind==='phone')return'phone';if(r==='url'||kind==='url')return'url';if(r==='reference'||r==='lookup'||s?.target?.reference||kind==='lookup')return'lookup';if(['currency','percent','double','int','integer','long','decimal','number'].includes(r)||r.includes('number')||kind==='number')return'number';if(['longtext','longtextarea','textarea','richtext','richtextarea'].includes(r)||['longtext','textarea'].includes(kind))return'longtext';return'text'};
+const typeLabel=s=>{const raws=rawTypes(s);if(raws.includes('currency'))return'Currency';if(raws.includes('percent'))return'Percent';const t=normalizeType(s);return({checkbox:'Checkbox',picklist:'Picklist',multipicklist:'Multi-select picklist',text:'Text',longtext:'Long text',number:'Number',date:'Date',datetime:'Date/Time',time:'Time',lookup:'Lookup',address:'Address',email:'Email',phone:'Phone',url:'URL'}[t]||'Text')};
 const display=v=>Array.isArray(v)?v.join('; '):v&&typeof v==='object'?(v.displayValue||'—'):String(v??'');
 const cleanEditedValue=(s,v)=>['Currency','Percent','Number'].includes(typeLabel(s))?cleanNumber(v):v;
-const apiDisplayName=s=>{const raw=String(s?.target?.apiName||s?.target?.fieldPath||s?.target?.key||'').trim();if(!raw)return'';const parts=raw.split('.').filter(Boolean);return parts[parts.length-1]||raw};
+const apiDisplayName=s=>{const raw=String(s?.target?.apiName||'').trim();if(!raw||/^label:/i.test(raw))return'';const path=String(s?.target?.fieldPath||'').trim();if(!raw&&(!path||/^label:/i.test(path)))return'';const source=raw||path;const parts=source.split('.').filter(Boolean);return parts[parts.length-1]||source};
 const optionList=s=>Array.isArray(s?.target?.options)?s.target.options:[];
 const valuesArray=v=>Array.isArray(v)?v:String(v??'').split(/\s*;\s*|\s*,\s*/).map(x=>x.trim()).filter(Boolean);
 const dateOffsetLabel=offset=>{const n=Number(offset);if(!Number.isFinite(n))return'';if(n===0)return'Today';return`Today ${n>0?'+':'-'} ${Math.abs(n)} day${Math.abs(n)===1?'':'s'}`};
@@ -42,6 +42,13 @@ async function load(){
   selectedId=params.get('recording')||Object.keys(recordings)[0]||null;
   activeSection=params.get('section')==='settings'?'settings':'recordings';
   render();
+  // Repair recordings that were captured before a field API name was available.
+  // This is intentionally generic: it asks the live Salesforce page to resolve
+  // every target that is missing a trustworthy API name, including picklists.
+  if(selectedId&&recordings[selectedId]){
+    await hydrateRecordingTargets(recordings[selectedId], {persist:true});
+    render();
+  }
 }
 
 function list(){
@@ -57,13 +64,108 @@ function fieldMatches(s){
   return `${s.target?.label||''} ${s.target?.apiName||s.target?.key||''} ${display(s.value)} ${typeLabel(s)}`.toLowerCase().includes(q);
 }
 
-async function hydrateDraftPicklists(draftObj){
-  const needs=(draftObj?.steps||[]).filter(s=>['picklist','multipicklist'].includes(normalizeType(s)) && (!optionList(s).length));
-  if(!needs.length)return;
-  const resp=await chrome.runtime.sendMessage({type:'GET_FIELD_DESCRIPTORS',targets:needs.map(s=>s.target)}).catch(()=>null); if(!resp?.ok)return;
-  const byKey=new Map((resp.descriptors||[]).map(d=>[d.targetKey,d]));
-  for(const s of draftObj.steps||[]){const d=byKey.get(s.target?.key)||byKey.get(`api:${s.target?.apiName}`);if(!d)continue;s.target={...s.target,kind:d.kind||s.target.kind,fieldType:d.fieldType||s.target.fieldType,sfDataType:d.sfDataType||s.target.sfDataType,salesforceType:d.salesforceType||s.target.salesforceType,options:d.options?.length?d.options:s.target.options};}
+async function hydrateRecordingTargets(recording,{persist=false}={}){
+  if(!recording?.steps?.length)return false;
+  const needs=(recording.steps||[]).filter(s=>{
+    const api=String(s?.target?.apiName||'').trim();
+    const path=String(s?.target?.fieldPath||'').trim();
+    const bad=!api||/^label:/i.test(api)||!path&&!api;
+    return bad || (['picklist','multipicklist'].includes(normalizeType(s))&&(!optionList(s).length||(!s.target?.isDependentPicklist&&!s.target?.controllerName&&!s.target?.controllerValues&&!s.target?.controllingFields?.length)));
+  });
+  if(!needs.length)return false;
+  const resp=await chrome.runtime.sendMessage({type:'GET_FIELD_DESCRIPTORS',targets:needs.map(s=>s.target)}).catch(()=>null);
+  if(!resp?.ok)return false;
+  const descriptors=resp.descriptors||[];
+  const byKey=new Map();
+  const byResolvedKey=new Map();
+  const bySelection=new Map();
+  const byLabelType=new Map();
+  const norm=v=>String(v??'').trim().toLowerCase();
+  descriptors.forEach(d=>{
+    if(d.targetKey)byKey.set(d.targetKey,d);
+    if(d.resolvedTargetKey)byResolvedKey.set(d.resolvedTargetKey,d);
+    if(d.targetSelectionName)bySelection.set(norm(d.targetSelectionName),d);
+    const lk=`${norm(d.objectApiName)}|${norm(d.label)}|${norm(d.kind||d.fieldType)}`;
+    if(lk!=='||'){const matches=byLabelType.get(lk)||[];matches.push(d);byLabelType.set(lk,matches);}
+  });
+  let changed=false;
+  for(const s of recording.steps||[]){
+    const key=s?.target?.key;
+    const apiKey=s?.target?.apiName?`api:${s.target.apiName}`:'';
+    const selectionKey=norm(s?.target?.targetSelectionName);
+    const labelKey=`${norm(s?.target?.objectApiName||recording?.context?.objectApiName)}|${norm(s?.target?.label)}|${norm(normalizeType(s))}`;
+    const labelMatches=byLabelType.get(labelKey)||[];
+    const d=byKey.get(key)||byResolvedKey.get(key)||byKey.get(apiKey)||bySelection.get(selectionKey)||(labelMatches.length===1?labelMatches[0]:null);
+    if(!d)continue;
+    const nextTarget={...s.target,
+      key:d.targetKey||s.target.key,
+      label:d.label||s.target.label,
+      apiName:(d.apiName&&!/^label:/i.test(String(d.apiName)))?d.apiName:s.target.apiName,
+      name:d.name||s.target.name,
+      kind:d.kind||s.target.kind,
+      fieldType:d.fieldType||s.target.fieldType,
+      sfDataType:d.sfDataType||s.target.sfDataType,
+      salesforceType:d.salesforceType||s.target.salesforceType,
+      reference:d.reference??s.target.reference,
+      referenceObject:d.referenceObject||s.target.referenceObject,
+      multiSelect:d.multiSelect??s.target.multiSelect,
+      objectApiName:d.objectApiName||s.target.objectApiName,
+      targetSelectionName:d.targetSelectionName||s.target.targetSelectionName,
+      fieldId:d.fieldId||s.target.fieldId,
+      fieldPath:d.fieldPath||s.target.fieldPath,
+      identitySource:d.identitySource||s.target.identitySource,
+      identityConfidence:d.identityConfidence??s.target.identityConfidence,
+      options:d.options?.length?d.options:(s.target.options||[]),
+      controllerName:d.controllerName||s.target.controllerName,
+      controllingFields:Array.isArray(d.controllingFields)?d.controllingFields.slice():(s.target.controllingFields||[]),
+      controllerValues:d.controllerValues||s.target.controllerValues,
+      isDependentPicklist:d.isDependentPicklist??s.target.isDependentPicklist
+    };
+    if(JSON.stringify(nextTarget)!==JSON.stringify(s.target)){s.target=nextTarget;changed=true;}
+  }
+  if(changed&&persist){
+    recordings[recording.id]=recording;
+    await saveRecordings(recordings);
+  }
+  return changed;
 }
+
+async function hydrateDraftPicklists(draftObj){
+  return hydrateRecordingTargets(draftObj,{persist:false});
+}
+
+function randomizer(){return window.ForcePilotRandomizer||null;}
+function randomCfgFor(step){const core=randomizer();return step?.randomization&&typeof step.randomization==='object'?clone(step.randomization):(core?.defaults?.(step)||{version:1,enabled:false,strategy:'text',options:{}});}
+function randInput(label,key,value,type='text',attrs=''){return`<label class="fp-opt-rand-field"><span>${label}</span><input class="edit-control fp-opt-rand-input" type="${type}" data-rand-opt="${key}" value="${escapeHtml(value??'')}" ${attrs}></label>`;}
+function randSelect(label,key,value,items){return`<label class="fp-opt-rand-field"><span>${label}</span><select class="edit-control fp-opt-rand-input" data-rand-opt="${key}">${items.map(([v,l])=>`<option value="${v}" ${String(value??'')===v?'selected':''}>${l}</option>`).join('')}</select></label>`;}
+function randCheck(label,key,value){return`<label class="fp-opt-rand-check"><input type="checkbox" class="fp-opt-rand-input" data-rand-opt="${key}" ${value?'checked':''}><span>${label}</span></label>`;}
+function renderRandomFields(step,cfg){
+ const o=cfg.options||{},st=cfg.strategy,f=[];
+ if(st==='textPrefixUnique'){const fallback=randomizer().defaults(step,st).options;f.push(randInput('Custom Text','prefix',o.prefix??fallback.prefix,'text','maxlength="255"'));}
+ else if(['text','paragraph'].includes(st)){f.push(randInput('Minimum length','minLength',o.minLength,'number','min="1" step="1"'));f.push(randInput('Maximum length','maxLength',o.maxLength,'number','min="1" step="1"'));}
+ else if(['numberRange','numberRangeIncrement','currencyRange','percentRange'].includes(st)){f.push(randInput('Min','min',o.min??1,'number','step="any"'));f.push(randInput('Max','max',o.max,'number','step="any"'));if(st!=='numberRange')f.push(randInput('Increment','step',o.step,'number','min="0.0000001" step="any"'));f.push(randInput('Decimals','decimals',o.decimals,'number','min="0" max="10" step="1"'));}
+ else if(st==='relativeDate'){const d=randomizer().defaults(step,st).options;f.push(`<div class="fp-opt-relative-date-row"><span class="fp-opt-relative-fixed">Today</span><select class="edit-control fp-opt-rand-input" data-rand-opt="sign" aria-label="Date direction"><option value="+" ${String(o.sign??d.sign)==='+'?'selected':''}>+</option><option value="-" ${String(o.sign??d.sign)==='-'?'selected':''}>−</option></select><input class="edit-control fp-opt-rand-input" type="number" data-rand-opt="days" min="0" max="36500" step="1" value="${escapeHtml(o.days??d.days)}" aria-label="Days"><span class="fp-opt-relative-days-label">days</span></div><p class="fp-opt-rand-hint">Days before or after the current date.</p>`);}
+ else if(st==='dateRange'){const d=randomizer().defaults(step,st).options;f.push(randInput('From','startDate',o.startDate??d.startDate,'date'));f.push(randInput('To','endDate',o.endDate??d.endDate,'date'));}
+ else if(st==='dateTimeRange'){const d=randomizer().defaults(step,st).options;f.push('<p class="fp-opt-rand-hint">Experimental: combined date/time inputs only. Split Lightning controls are not verified.</p>');f.push(randInput('From days','fromDays',o.fromDays??d.fromDays,'number','min="-36500" max="36500" step="1"'));f.push(randInput('To days','toDays',o.toDays??d.toDays,'number','min="-36500" max="36500" step="1"'));f.push(randSelect('Preset','direction',o.direction||'any',[['any','Any'],['past','Past only'],['future','Future only']]));f.push(randInput('From time','startTime',o.startTime??d.startTime,'time'));f.push(randInput('To time','endTime',o.endTime??d.endTime,'time'));f.push(randInput('Minute step','stepMinutes',o.stepMinutes??15,'number','min="1" max="1440" step="1"'));f.push(randCheck('Weekdays only','weekdaysOnly',o.weekdaysOnly));}
+ else if(st==='timeRange'){f.push(randInput('Start time','startTime',o.startTime,'time'));f.push(randInput('End time','endTime',o.endTime,'time'));f.push(randInput('Minute interval','stepMinutes',o.stepMinutes,'number','min="1" max="1440" step="1"'));}
+ else if(st==='email'||st==='url'){f.push(randInput('Domain','domain',o.domain||'example.com'));}
+ else if(st==='phone'){f.push(randSelect('Country format','country',o.country||'US',[['US','United States'],['IN','India'],['UK','United Kingdom']]));}
+ else if(st==='picklist'||st==='multiPicklist'){const opts=Array.isArray(step?.target?.options)?step.target.options:[];if(opts.length){const allowed=Array.isArray(o.allowedValues)?o.allowedValues:[];f.push(`<fieldset class="fp-opt-allowed"><legend>Allowed options</legend><div class="fp-opt-option-list">${opts.filter(x=>x.active!==false).map(x=>{const val=String(x.value??x.displayValue??''),label=String(x.displayValue??x.value??'');const on=!Array.isArray(o.allowedValues)||allowed.some(a=>String(a).toLowerCase()===val.toLowerCase()||String(a).toLowerCase()===label.toLowerCase());return `<label><input type="checkbox" data-rand-allowed value="${escapeHtml(val)}" ${on?'checked':''}><span>${escapeHtml(label)}</span></label>`}).join('')}</div></fieldset>`);}else f.push(`<p class="fp-opt-rand-hint">${st==='picklist'?'Selects from available recorded options. Do not use for dependent picklists.':'Salesforce options will be resolved during Autofill.'}</p>`);if(st==='multiPicklist'){f.push(randInput('Minimum selections','minSelections',o.minSelections??1,'number','min="1" step="1"'));f.push(randInput('Maximum selections','maxSelections',o.maxSelections??3,'number','min="1" step="1"'));}}
+ else if(st==='dependentPicklist'){f.push('<p class="fp-opt-rand-hint">Selects any random available option</p>');}
+ else if(st==='lookupRandom'){f.push(randInput('Search text (optional)','searchTerm',o.searchTerm||''));}
+ else if(st==='lookupCreate'){f.push('<p class="fp-opt-rand-hint">This is a captured Create New workflow. Keep the parent lookup unchanged and randomize the new-record fields below.</p>');}
+ else if(st==='address'){f.push(randSelect('Sample address region','country',o.country||'US',[['US','United States'],['UK','United Kingdom'],['IN','India']]));}
+ return f.join('');}
+function getRandomStep(key){const parts=String(key).split('.').map(Number);let step=draft?.steps?.[parts[0]];for(const n of parts.slice(1))step=step?.meta?.createNewRecord?.fields?.[n];return step||null;}
+function renderNestedRandomizers(step,index){const children=step?.meta?.createNewRecord?.fields;if(!Array.isArray(children)||!children.length)return'';return `<div class="fp-opt-nested-randomizers"><div class="fp-opt-nested-title">New record fields</div>${children.map((child,j)=>`<div class="fp-opt-nested-field"><div><strong>${escapeHtml(child.target?.label||`Field ${j+1}`)}</strong><small>${escapeHtml(typeLabel(child))}</small></div>${renderRandomization(child,`${index}.${j}`)}</div>`).join('')}</div>`;}
+function renderRandomization(step,index){const core=randomizer();if(!core)return'';const cfg=randomCfgFor(step);cfg.options=cfg.options||{};const today=localDateISO();
+ if(cfg.strategy==='dateRange'&&(cfg.options.fromDays!==undefined||cfg.options.toDays!==undefined)){const from=Number(cfg.options.fromDays??-30),to=Number(cfg.options.toDays??30);cfg.options.startDate=shiftDateFrom(today,from);cfg.options.endDate=shiftDateFrom(today,to);delete cfg.options.fromDays;delete cfg.options.toDays;delete cfg.options.direction;delete cfg.options.weekdaysOnly;}
+ if(cfg.strategy==='dateTimeRange'&&cfg.options.fromDays===undefined&&cfg.options.toDays===undefined&&cfg.options.startDateTime&&cfg.options.endDateTime){const from=dateOffsetDays(today,String(cfg.options.startDateTime).slice(0,10)),to=dateOffsetDays(today,String(cfg.options.endDateTime).slice(0,10));if(from!==null&&to!==null){cfg.options.fromDays=from;cfg.options.toDays=to;cfg.options.startTime=String(cfg.options.startDateTime).slice(11,16)||'09:00';cfg.options.endTime=String(cfg.options.endDateTime).slice(11,16)||'17:00';cfg.options.stepMinutes=Number(cfg.options.stepMinutes)||15;cfg.options.direction=cfg.options.direction||'any';cfg.options.weekdaysOnly=!!cfg.options.weekdaysOnly;delete cfg.options.startDateTime;delete cfg.options.endDateTime;}}
+ const strategies=core.strategies(step)||[],on=!!cfg.enabled;if(on&&expandedRandomKey===null)expandedRandomKey=String(index);const expanded=on&&expandedRandomKey===String(index);const unique=['text','paragraph','company','email','url','phone','currencyRange','percentRange','multiPicklist','picklist','dependentPicklist','lookupRandom'].includes(cfg.strategy);let preview='—';if(on){const result=core.generate(step,cfg,{usedValues:new Set()});if(result?.ok)preview=Array.isArray(result.value)?result.value.join('; '):typeof result.value==='object'?JSON.stringify(result.value):String(result.value??'—');else preview='Configure settings';}
+ return `<section class="fp-opt-randomization" data-opt-randomization="${index}"><div class="fp-opt-rand-head"><strong data-rand-heading="${index}" tabindex="0" role="button" aria-expanded="${expanded}">Randomize value</strong><label class="fp-opt-switch"><input type="checkbox" data-rand-enabled="${index}" ${on?'checked':''} aria-label="Randomize ${escapeHtml(step.target?.label||'field')}"><span></span></label></div>${expanded?`<div class="fp-opt-rand-body"><label class="fp-opt-rand-field fp-opt-rand-strategy"><span>Generate</span><select class="edit-control fp-opt-rand-input" data-rand-strategy="${index}">${strategies.map(x=>`<option value="${escapeHtml(x.value)}" ${cfg.strategy===x.value?'selected':''}>${escapeHtml(x.label)}</option>`).join('')}</select></label><div class="fp-opt-rand-grid ${['numberRange','numberRangeIncrement','currencyRange','percentRange'].includes(cfg.strategy)?`fp-opt-rand-grid-numeric-${cfg.strategy==='numberRange'?3:4}`:['dateRange','dateTimeRange'].includes(cfg.strategy)?'fp-opt-rand-grid-date':''}">${renderRandomFields(step,cfg)}</div>${unique?`<label class="fp-opt-rand-unique"><input type="checkbox" data-rand-unique="${index}" ${cfg.options?.unique?'checked':''}><span>Generate a unique value</span></label>`:''}${on&&cfg.strategy==='lookupRandom'?'<p class="fp-opt-rand-warning" role="note">May select a real Salesforce record.</p>':''}<div class="fp-opt-rand-preview"><span><small>Example</small><strong data-rand-preview="${index}">${escapeHtml(preview)}</strong></span><button type="button" class="secondary compact" data-rand-generate="${index}">Preview</button></div><p class="fp-opt-rand-error" data-rand-error="${index}" role="alert"></p></div>`:''}</section>`;}
+function collectRandomization(step,index){const root=document.querySelector(`[data-opt-randomization="${index}"]`);if(!root)return randomCfgFor(step);const core=randomizer(),strategy=root.querySelector('[data-rand-strategy]')?.value||step.randomization?.strategy||core.guessStrategy(step);const cfg=step.randomization&&step.randomization.strategy===strategy?clone(step.randomization):core.defaults(step,strategy);cfg.version=1;cfg.enabled=!!root.querySelector('[data-rand-enabled]')?.checked;cfg.strategy=strategy;cfg.options=cfg.options||{};root.querySelectorAll('[data-rand-opt]').forEach(el=>{const key=el.dataset.randOpt;cfg.options[key]=el.type==='checkbox'?el.checked:el.type==='number'?(el.value===''?'':Number(el.value)):el.value;});if(strategy==='dateRange'&&cfg.options.startDate&&cfg.options.endDate){delete cfg.options.fromDays;delete cfg.options.toDays;delete cfg.options.direction;delete cfg.options.weekdaysOnly;}if(strategy==='boolean')cfg.options.mode='random';const allow=[...root.querySelectorAll('[data-rand-allowed]:checked')].map(el=>el.value);if(root.querySelector('[data-rand-allowed]'))cfg.options.allowedValues=allow;else if(strategy==='dependentPicklist')delete cfg.options.allowedValues;const unique=root.querySelector('[data-rand-unique]');if(unique)cfg.options.unique=unique.checked;return cfg;}
+function rerenderRandomizationSections(){const roots=[...document.querySelectorAll('[data-opt-randomization]')];for(const root of roots){const key=String(root.dataset.optRandomization),step=getRandomStep(key);if(step)step.randomization=collectRandomization(step,key);}for(const root of roots){const key=String(root.dataset.optRandomization),step=getRandomStep(key);if(!step)continue;const tmp=document.createElement('div');tmp.innerHTML=renderRandomization(step,key);root.replaceWith(tmp.firstElementChild);}}
+function updateRandomizer(index,rerender=true){const step=draft?.steps?.[Number(index)];if(!step)return;const cfg=collectRandomization(step,index);step.randomization=cfg;if(rerender){const row=document.querySelector(`.editor-row[data-row-index="${index}"]`);if(row){const temp=document.createElement('div');temp.innerHTML=renderRandomization(step,index);row.querySelector('.fp-opt-randomization')?.replaceWith(temp.firstElementChild);if(!row.querySelector('.fp-opt-randomization'))row.insertAdjacentHTML('beforeend',renderRandomization(step,index));}}}
 
 function editorField(s,i){
   const t=normalizeType(s),v=s.value,opts=optionList(s);
@@ -74,7 +176,11 @@ function editorField(s,i){
     return`<div class="multi-options">${opts.map(o=>{const label=o.displayValue||o.value,on=vals.includes(String(o.value).toLowerCase())||vals.includes(String(label).toLowerCase());return`<label><input type="checkbox" data-multi-index="${i}" data-multi-value="${escapeHtml(o.value)}" ${on?'checked':''}><span>${escapeHtml(label)}</span></label>`}).join('')}</div>`;
   }
   if(t==='date'){const m=s?.meta||{};if(m.dateMode==='relative'&&Number.isFinite(Number(m.dateOffsetDays))){const off=Number(m.dateOffsetDays);const sign=off<0?'-':'+';return`<div class="relative-date-editor"><span class="relative-date-fixed">Today</span><select class="editor-select relative-date-sign" data-date-sign="${i}" aria-label="Relative date direction"><option value="+" ${sign==='+'?'selected':''}>+</option><option value="-" ${sign==='-'?'selected':''}>-</option></select><input class="edit-control relative-date-number" type="number" min="0" step="1" data-date-offset="${i}" value="${Math.abs(off)}" aria-label="Number of days"><span class="relative-date-fixed">days</span></div>`;}const exact=String(s.value||'').slice(0,10);return`<input class="edit-control" type="date" data-edit-value="${i}" value="${escapeHtml(exact)}">`; }
-  return`<input class="edit-control" type="text" data-edit-value="${i}" value="${escapeHtml(display(v))}" placeholder="Recorded value">`;
+  if(t==='datetime')return`<input class="edit-control" type="datetime-local" data-edit-value="${i}" value="${escapeHtml(String(v||'').slice(0,16))}">`;
+  if(t==='time')return`<input class="edit-control" type="time" data-edit-value="${i}" value="${escapeHtml(String(v||'').slice(0,5))}">`;
+  if(t==='longtext')return`<textarea class="edit-control" data-edit-value="${i}" rows="2" placeholder="Recorded value">${escapeHtml(display(v))}</textarea>`;
+  if(t==='address'){const a=v&&typeof v==='object'?v:{};return`<div class="fp-address-edit">${[['street','Street'],['city','City'],['province','State / Province'],['postalCode','Postal code'],['country','Country']].map(([k,l])=>`<label><span>${l}</span><input class="edit-control" data-address-part="${i}" data-part="${k}" value="${escapeHtml(a[k]??(k==='province'?a.state:'')??'')}"></label>`).join('')}</div>`;}
+  const inputType=t==='number'?'number':t==='email'?'email':t==='url'?'url':'text';return`<input class="edit-control" type="${inputType}" data-edit-value="${i}" value="${escapeHtml(display(v))}" placeholder="Recorded value">`;
 }
 
 function render(){
@@ -169,23 +275,15 @@ function renderSettings(){
           </div>
         </section>
 
-        <section class="settings-section">
-          <div class="settings-section-head">
-            <div><h3>Recording</h3><p>Choose how recorded date values are stored.</p></div>
-          </div>
-          <div class="settings-rows">
-            ${setting('dateRelativeToToday','Save recorded dates relative to today','Store dates as Today ± days instead of the original calendar date.')}
-          </div>
-        </section>
-      </div>
+</div>
 
       <div class="settings-column settings-column-secondary">
         <section class="settings-section">
           <div class="settings-section-head">
-            <div><h3>Testing</h3><p>Control when test cases move into execution.</p></div>
+            <div><h3>Testing</h3><p>Control how scenarios move into execution.</p></div>
           </div>
           <div class="settings-rows">
-            ${setting('skipTestCaseReview','Skip test case review','Start testing immediately after test cases are parsed.')}
+            ${setting('skipTestCaseReview','Skip scenario review','Start testing immediately after scenarios are parsed.')}
           </div>
         </section>
 
@@ -209,9 +307,13 @@ function renderSettings(){
                 <output id="exportImageQualityValue" for="exportImageQuality">${exportQuality}%</output>
               </div>
             </div>
+            <div class="setting-row experience-cloud-domains">
+              <div class="setting-copy"><strong>Custom domains</strong><small>Optional. Enter one hostname per line for branded Experience Cloud sites. Standard Salesforce domains work automatically.</small></div>
+              <textarea id="experienceCloudDomains" rows="3" spellcheck="false" placeholder="portal.example.com">${escapeHtml((settings.experienceCloudDomains||[]).join('\n'))}</textarea>
+            </div>
             ${setting('darkMode','Dark mode','Use the dark ForcePilot interface across Options, Popup, Side Panel, and Salesforce launcher states.')}
             <div class="setting-row intro-tour-row">
-              <div class="setting-copy"><strong>First-run tour</strong><small>See the quick ForcePilot introduction again the next time you open the sidebar.</small></div>
+              <div class="setting-copy"><strong>First-run tour</strong><small>Replay the ForcePilot introduction on your next sidebar open and the Testing tour the next time you click Testing.</small></div>
               <button class="secondary compact" id="replayFirstRun" type="button">Show intro</button>
             </div>
           </div>
@@ -259,23 +361,51 @@ function renderEditor(r){
 function renderFieldRow(s,i){
   const t=normalizeType(s);
   const locateAttrs=editing?'':' data-focus-step="'+i+'" tabindex="0" title="Locate field in Salesforce"';
-  return`<div class="editor-row ${editing?'is-editing':'locatable'}" role="row"${locateAttrs}>
+  return`<div class="editor-row ${editing?'is-editing':'locatable'}" data-row-index="${i}" role="row"${locateAttrs}>
     <span class="step-number">${i+1}</span>
     <div class="field-main"><strong>${escapeHtml(s.target.label)}</strong><span class="api">${escapeHtml(apiDisplayName(s))}</span></div>
-    <div class="field-value">${editing?editorField(s,i):`<span class="value-text">${escapeHtml((t==='date'?dateFieldDisplay(s):display(s.value))||'—')}</span>`}</div>
+    <div class="field-value">${editing?editorField(s,i):`<span class="value-text ${s.randomization?.enabled?'is-randomized':''}">${escapeHtml(s.randomization?.enabled?'Randomized':((t==='date'?dateFieldDisplay(s):display(s.value))||'—'))}</span>`}</div>
     <div class="field-type"><span class="typepill">${typeLabel(s)}</span></div>
-    ${editing?`<div class="row-tools"><label class="use-check" title="Use in Autofill"><input class="check" type="checkbox" data-enabled="${i}" ${s.enabled!==false?'checked':''}></label><button class="icon-delete" data-remove="${i}" title="Remove field" aria-label="Remove field">${icon('delete')}</button></div>`:''}
+    ${editing?`<div class="row-tools"><button class="icon-delete" data-remove="${i}" title="Remove field" aria-label="Remove field">${icon('delete')}</button></div>${renderRandomization(s,i)}${renderNestedRandomizers(s,i)}`:''}
   </div>`;
 }
 
 function bind(){
-  document.querySelectorAll('.listitem[data-id]').forEach(b=>b.addEventListener('click',()=>requestDiscardAnd(()=>{selectedId=b.dataset.id;editing=false;draft=snapshot=null;recordingSearch='';fieldSearch='';render()})));
+  document.querySelectorAll('.listitem[data-id]').forEach(b=>b.addEventListener('click',()=>requestDiscardAnd(async()=>{selectedId=b.dataset.id;editing=false;draft=snapshot=null;recordingSearch='';fieldSearch='';render();const r=recordings[selectedId];if(r){await hydrateRecordingTargets(r,{persist:true});render();}})));
   document.querySelectorAll('[data-section]').forEach(b=>b.addEventListener('click',()=>requestDiscardAnd(()=>{activeSection=b.dataset.section;editing=false;draft=snapshot=null;recordingSearch='';fieldSearch='';const u=new URL(location.href);u.searchParams.set('section',activeSection);if(selectedId)u.searchParams.set('recording',selectedId);history.replaceState({},'',u);render()})));
+  if(app.dataset.fpRandomizationBound!=='true'){app.dataset.fpRandomizationBound='true';
+  app.addEventListener('change', async e=>{
+    const en=e.target.closest('[data-rand-enabled]');const strat=e.target.closest('[data-rand-strategy]');const idx=en?.dataset.randEnabled??strat?.dataset.randStrategy;
+    if(idx!==undefined){const key=String(idx),step=getRandomStep(key);if(!step)return;const root=document.querySelector(`[data-opt-randomization="${key}"]`);let oldCfg=collectRandomization(step,key);if(strat){const next=randomizer().defaults(step,strat.value);next.enabled=!!step.randomization?.enabled||oldCfg.enabled;step.randomization=next;expandedRandomKey=key;}else{oldCfg.enabled=en.checked;step.randomization=oldCfg;expandedRandomKey=en.checked?key:'';}if(root)rerenderRandomizationSections();return;}
+    const randOpt=e.target.closest('[data-rand-opt],[data-rand-allowed],[data-rand-unique]');if(randOpt){const section=randOpt.closest('[data-opt-randomization]');if(!section)return;const key=String(section.dataset.optRandomization),step=getRandomStep(key);if(!step)return;
+      if(randOpt.dataset.randOpt==='step')randOpt.dataset.fpStepTouched='true';
+      if(randOpt.dataset.randOpt==='decimals' && (step.randomization?.strategy||section.querySelector('[data-rand-strategy]')?.value)==='percentRange'){
+        const increment=section.querySelector('[data-rand-opt="step"]'),defaultStep=Number(randomizer().defaults(step,'percentRange').options.step);if(increment&&increment.dataset.fpStepTouched!=='true'&&Number.isFinite(defaultStep)&&Math.abs(Number(increment.value)-defaultStep)<1e-12&&Number(randOpt.value)>=0)increment.value=String(1/Math.pow(10,Math.min(10,Number(randOpt.value))));
+      }
+      step.randomization=collectRandomization(step,key);const verdict=randomizer().validate(step,step.randomization);const err=section.querySelector('[data-rand-error]');if(err)err.textContent=verdict.ok?'':verdict.error;}
+  });
+  app.addEventListener('click',e=>{const h=e.target.closest('[data-rand-heading]');if(!h)return;const key=String(h.dataset.randHeading),step=getRandomStep(key);if(!step?.randomization?.enabled)return;expandedRandomKey=expandedRandomKey===key?'':key;const root=h.closest('[data-opt-randomization]');if(root)rerenderRandomizationSections();});
+  app.addEventListener('keydown',e=>{const h=e.target.closest('[data-rand-heading]');if(h&&(e.key==='Enter'||e.key===' ')){e.preventDefault();h.click();}});
+  app.addEventListener('click',e=>{const b=e.target.closest('[data-rand-generate]');if(!b)return;const key=String(b.dataset.randGenerate),step=getRandomStep(key);if(!step)return;const cfg=collectRandomization(step,key),root=b.closest('[data-opt-randomization]'),out=root?.querySelector('[data-rand-preview]'),err=root?.querySelector('[data-rand-error]');
+    if(out&&['numberRangeIncrement','currencyRange','percentRange'].includes(cfg.strategy)){
+      const min=Number(cfg.options?.min),max=Number(cfg.options?.max),decimals=Math.max(0,Math.min(10,Number(cfg.options?.decimals)||0));let increment=Number(cfg.options?.step);if(cfg.strategy==='percentRange'){const scaleRaw=step?.target?.scale,targetScale=scaleRaw!==undefined&&scaleRaw!==null&&String(scaleRaw)!==''&&Number.isInteger(Number(scaleRaw))?Math.max(0,Math.min(10,Number(scaleRaw))):null,defaultStep=targetScale===null?1:1/Math.pow(10,targetScale),autoStep=targetScale===null?decimals>0:decimals!==targetScale;if(autoStep&&Math.abs(increment-defaultStep)<1e-12)increment=1/Math.pow(10,decimals);}
+      const current=Number(String(out.textContent||'').replace(/[^0-9eE+.-]/g,''));let next=Number.isFinite(current)&&current>=min&&current<=max?current+increment:min;if(!Number.isFinite(next)||next>max+1e-9)next=min;if(Math.abs(next)<1e-9){next=min>0?min:increment;if(next>max)next=min;}out.textContent=Number(next.toFixed(decimals)).toString();if(err)err.textContent='';return;
+    }
+    const result=randomizer().generate(step,cfg,{usedValues:new Set()});if(out)out.textContent=result.ok?(Array.isArray(result.value)?result.value.join('; '):typeof result.value==='object'?JSON.stringify(result.value):String(result.value)):'—';if(err)err.textContent=result.ok?'':result.error;});
+  }
+
   document.querySelectorAll('[data-launcher-mode]').forEach(b=>b.addEventListener('click',async()=>{const mode=['edge','bubble','off'].includes(b.dataset.launcherMode)?b.dataset.launcherMode:'edge';settings={...settings,launcherMode:mode,showOverlay:mode!=='off'};await saveSettings(settings);render()}));
   document.getElementById('search')?.addEventListener('input',e=>{recordingSearch=e.target.value;clearTimeout(window.fpSearchTimer);window.fpSearchTimer=setTimeout(()=>{const pos=recordingSearch.length;render();const el=document.getElementById('search');if(el){el.focus();el.setSelectionRange(pos,pos)}},100)});
   document.getElementById('fieldSearch')?.addEventListener('input',e=>{fieldSearch=e.target.value;render();const el=document.getElementById('fieldSearch');if(el){el.focus();el.setSelectionRange(fieldSearch.length,fieldSearch.length)}});
+  document.getElementById('experienceCloudDomains')?.addEventListener('change',async e=>{
+    const raw=String(e.target.value||'').split(/[\r\n,;]+/).map(v=>v.trim()).filter(Boolean);
+    const parsed=[];const invalid=[];
+    for(const item of raw){let host=item.toLowerCase().replace(/^https?:\/\//,'').split(/[\/?#]/)[0].replace(/^\*\./,'').replace(/:\d+$/,'').replace(/\.$/,'');if(/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i.test(host)){if(!parsed.includes(host))parsed.push(host);}else invalid.push(item);}
+    if(invalid.length){show(`Invalid domain${invalid.length===1?'':'s'}: ${invalid.slice(0,3).join(', ')}`,true);e.target.value=(settings.experienceCloudDomains||[]).join('\n');return;}
+    settings={...settings,experienceCloudDomains:parsed.slice(0,50)};await saveSettings(settings);e.target.value=settings.experienceCloudDomains.join('\n');show('Experience Cloud domains saved.');
+  });
   document.querySelectorAll('[data-setting]').forEach(el=>el.addEventListener('change',async e=>{settings={...settings,[e.target.dataset.setting]:e.target.checked};if(e.target.dataset.setting==='darkMode')applyTheme(settings.darkMode);await saveSettings(settings);}));
-  document.getElementById('replayFirstRun')?.addEventListener('click', async () => { try { await chrome.storage.local.set({ 'forcepilot.firstRunTour.seen.v1': false }); show('Welcome tour will appear when you next open ForcePilot'); } catch { show('Could not reset the welcome tour', true); } });
+  document.getElementById('replayFirstRun')?.addEventListener('click', async () => { try { await chrome.storage.local.set({ 'forcepilot.firstRunTour.seen.v1': false, 'forcepilot.testingFirstRunTour.seen.v1': false }); show('Welcome tour will appear when you next open ForcePilot. The Testing tour will appear when you open Testing.'); } catch { show('Could not reset the welcome tours', true); } });
   const qualityInput=document.getElementById('exportImageQuality');
   const qualityOutput=document.getElementById('exportImageQualityValue');
   qualityInput?.addEventListener('input',e=>{if(qualityOutput){qualityOutput.textContent=`${e.target.value}%`;qualityOutput.value=`${e.target.value}%`;}});
@@ -288,7 +418,7 @@ function bind(){
     
   });
   document.getElementById('reset')?.addEventListener('click',()=>requestConfirmation('Reset settings','Reset all Autofill settings to their defaults?','Reset',async()=>{settings={...DEFAULTS};applyTheme(settings.darkMode);await saveSettings(settings);render();show('Settings reset')}));
-  document.getElementById('edit')?.addEventListener('click',async()=>{draft=clone(recordings[selectedId]);snapshot=clone(draft);editing=true;render();await hydrateDraftPicklists(draft);render()});
+  document.getElementById('edit')?.addEventListener('click',async()=>{draft=clone(recordings[selectedId]);snapshot=clone(draft);expandedRandomKey=null;editing=true;render();await hydrateDraftPicklists(draft);render()});
   document.getElementById('cancelEdit')?.addEventListener('click',()=>requestDiscardAnd(()=>{editing=false;draft=snapshot=null;render()}));
   document.getElementById('saveEdit')?.addEventListener('click',saveEdit);
   document.getElementById('deleteOne')?.addEventListener('click',deleteOne);
@@ -325,7 +455,7 @@ async function focusSalesforceField(index){
   const tabs=await chrome.tabs.query({active:true,currentWindow:true}).catch(()=>[]);
   const tab=tabs?.[0];
   if(!tab?.id)return;
-  await chrome.tabs.sendMessage(tab.id,{type:'FOCUS_FIELD',target:step.target}).catch(()=>null);
+  await chrome.runtime.sendMessage({type:'FORCEPILOT_MULTIFRAME_REQUEST',tabId:tab.id,message:{type:'FOCUS_FIELD',target:step.target,frame:step.frame}}).catch(()=>null);
 }
 
 function requestConfirmation(title,message,confirmLabel,action){pendingConfirmation={title,message,confirmLabel,action,returnFocus:document.activeElement?.id||''};render()}
@@ -333,11 +463,14 @@ function requestDiscardAnd(action){if(!editing||JSON.stringify(draft)===JSON.str
 
 async function saveEdit(){
   if(!draft)return;
+  // Validate every enabled randomizer before mutating or saving any recording data.
+  for(const root of document.querySelectorAll('[data-opt-randomization]')){const key=String(root.dataset.optRandomization),step=getRandomStep(key);if(!step)continue;const cfg=collectRandomization(step,key);step.randomization=cfg;if(cfg.enabled&&cfg.strategy==='lookupCreate'){const err=root.querySelector('[data-rand-error]');if(err)err.textContent='The parent lookup cannot be randomized while using Create New. Randomize the child fields instead.';show(`Randomization for ${step.target?.label||'field'}: configure the new-record fields instead.`,true);root.scrollIntoView({block:'nearest',behavior:'smooth'});return;}if(cfg.enabled){const verdict=randomizer()?.validate?.(step,cfg)||{ok:true};if(!verdict.ok){const err=root.querySelector('[data-rand-error]');if(err)err.textContent=verdict.error;show(`Randomization for ${step.target?.label||'field'}: ${verdict.error}`,true);root.scrollIntoView({block:'nearest',behavior:'smooth'});return;}}}
   draft.name=document.getElementById('name')?.value.trim()||draft.name;
   draft.steps.forEach((s,i)=>{
     const b=document.querySelector(`[data-edit-bool="${i}"]`),v=document.querySelector(`[data-edit-value="${i}"]`);
     if(b)s.value=b.checked;
     else if(normalizeType(s)==='multipicklist'&&optionList(s).length)s.value=[...document.querySelectorAll(`[data-multi-index="${i}"]:checked`)].map(x=>x.dataset.multiValue).filter(Boolean);
+    else if(normalizeType(s)==='address'){const parts=[...document.querySelectorAll(`[data-address-part="${i}"]`)];if(parts.length){const next={...(s.value&&typeof s.value==='object'?s.value:{})};parts.forEach(el=>next[el.dataset.part]=el.value.trim());s.value=next;}}
     else if(v){
       if(normalizeType(s)==='date'){
         const recordingDate=s.meta?.dateRecordedOn||draft.recordingDate||localDateISO();
@@ -374,17 +507,32 @@ async function importData(e){
     const d=JSON.parse(await file.text());
     if(!d||typeof d!=='object'||!d.recordings||typeof d.recordings!=='object'||Array.isArray(d.recordings))throw Error('Invalid recording file.');
     const incoming=Object.values(normalizeStoredRecordings(d.recordings).recordings);if(incoming.length>1000)throw Error('Too many recordings in this file.');
-    const allowedActions=new Set(['set-value','set-boolean','select-option','set-multi-option','select-lookup','set-address']);const accepted=[];
+    const allowedActions=new Set(['set-value','set-boolean','select-option','set-multi-option','select-lookup','set-address']);const accepted=[];let invalidRandomizationCount=0;
+    const sanitizeRandomization=(step)=>{
+      if(!step||typeof step!=='object')return step;
+      const clean=clone(step),cfg=clean.randomization,core=randomizer();
+      if(cfg){
+        const known=!!(cfg&&typeof cfg==='object'&&!Array.isArray(cfg)&&core?.strategies?.(clean)?.some(x=>x.value===String(cfg.strategy||'')));
+        const shape=known&&(!('version'in cfg)||Number(cfg.version)===1)&&typeof cfg.enabled==='boolean'&&cfg.options&&typeof cfg.options==='object'&&!Array.isArray(cfg.options)&&JSON.stringify(cfg).length<=20000;
+        const verdict=shape&&cfg.enabled?core.validate(clean,cfg):{ok:shape};
+        // Unknown or malformed imported settings must never break a previously valid
+        // recording. Remove only the unsupported randomization metadata; retain value.
+        if(!shape||!verdict?.ok||(cfg.enabled&&cfg.strategy==='lookupCreate')){delete clean.randomization;invalidRandomizationCount++;}
+      }
+      const children=clean.meta?.createNewRecord?.fields;
+      if(Array.isArray(children))clean.meta={...clean.meta,createNewRecord:{...clean.meta.createNewRecord,fields:children.map(sanitizeRandomization)}};
+      return clean;
+    };
     for(const r of incoming){
       if(!r||typeof r!=='object'||typeof r.id!=='string'||!/^[A-Za-z0-9_-]{8,120}$/.test(r.id)||!Array.isArray(r.steps)||r.steps.length>500)continue;
-      const steps=r.steps.filter(s=>s&&typeof s==='object'&&allowedActions.has(s.action)&&s.target&&typeof s.target==='object'&&typeof s.target.label==='string'&&s.target.label.length<=500&&JSON.stringify(s.value??'').length<=10000);
+      const steps=r.steps.filter(s=>s&&typeof s==='object'&&allowedActions.has(s.action)&&s.target&&typeof s.target==='object'&&typeof s.target.label==='string'&&s.target.label.length<=500&&JSON.stringify(s.value??'').length<=10000).map(sanitizeRandomization);
       if(steps.length!==r.steps.length)continue;
       const clean={...r,steps,name:String(r.name||'Recording').slice(0,200),context:r.context&&typeof r.context==='object'?{objectApiName:String(r.context.objectApiName||'').slice(0,200),objectLabel:String(r.context.objectLabel||'').slice(0,200),mode:String(r.context.mode||'').slice(0,50)}:{}};accepted.push(clean);
     }
     if(!accepted.length)throw Error('No valid recordings were found.');
     const cleanSettings=d.settings&&typeof d.settings==='object'?Object.fromEntries(Object.entries(d.settings).filter(([k,v])=>k in DEFAULTS&&(['exportImageQuality'].includes(k)?Number.isFinite(Number(v)):k==='launcherMode'?['edge','bubble','off'].includes(String(v)):typeof v==='boolean')).map(([k,v])=>[k,k==='exportImageQuality'?Math.min(95,Math.max(70,Math.round(Number(v)))):k==='launcherMode'?(String(v)==='current'?'bubble':(['edge','bubble','off'].includes(String(v))?String(v):'edge')):v])):null;
     const conflicts=accepted.filter(r=>!!recordings[r.id]).length;
-    pendingImport={recordings:accepted,settings:cleanSettings,fileName:file.name||'Import file',invalidCount:incoming.length-accepted.length,conflicts};
+    pendingImport={recordings:accepted,settings:cleanSettings,fileName:file.name||'Import file',invalidCount:incoming.length-accepted.length,invalidRandomizationCount,conflicts};
     render();
   }catch(err){show(err.message||'Import failed.',true)}finally{e.target.value=''}
 }
@@ -399,8 +547,19 @@ async function applyImport(mode){
   await saveRecordings(recordings);if(staged.settings)await saveSettings(settings);
   applyTheme(settings.darkMode);render();
   const message=mode==='replace'?`Replaced saved recordings with ${staged.recordings.length} imported.`:`Imported ${staged.recordings.length-staged.conflicts} new recording${staged.recordings.length-staged.conflicts===1?'':'s'}; kept ${staged.conflicts} existing ID conflict${staged.conflicts===1?'':'s'}.`;
-  show(message);
+  show(staged.invalidRandomizationCount?`${message} Removed ${staged.invalidRandomizationCount} invalid randomization setting${staged.invalidRandomizationCount===1?'':'s'}; original recorded values were preserved.`:message,!!staged.invalidRandomizationCount);
 }
 function show(m,error=false){showToast(m,{type:error?'error':'success',duration:error?3400:2200})}
 load().catch(err=>show(err.message||String(err),true));
+chrome.storage.onChanged.addListener((changes,area)=>{
+  if(area!=='local'||!changes[RECORDINGS_KEY])return;
+  getRecordings().then(next=>{
+    recordings=next;
+    if(selectedId&&!recordings[selectedId]){
+      selectedId=Object.keys(recordings)[0]||null;
+      editing=false;draft=snapshot=null;
+    }
+    render();
+  }).catch(()=>{});
+});
 watchTheme((dark)=>{ settings={...settings,darkMode:dark}; if(activeSection==='settings') render(); });

@@ -29,10 +29,17 @@ const PATHS={
   camera:'M9 2h6l1.5 2H20a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h3.5L9 2zm3 15a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0-2.2a1.8 1.8 0 1 1 0-3.6 1.8 1.8 0 0 1 0 3.6z',
   contentCopy:'M16 1H4c-1.1 0-2 .9-2 2v12h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z',
   contentPaste:'M19 2h-4.18C14.4 0.84 13.3 0 12 0s-2.4.84-2.82 2H5c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7 0c.55 0 1 .45 1 1s-.45 1-1 1-1-.45-1-1 .45-1 1-1zm7 18H5V4h2v3h10V4h2v16z',
+  noteAdd:'M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h8v-2H6V4h7v5h5v5h2V8l-6-6zm5 14h-2v-2h-2v2h-2v2h2v2h2v-2h2v-2z',
   link:'M3.9 12c0-1.7 1.3-3 3-3h4V7H6.9C4.2 7 2 9.2 2 12s2.2 5 4.9 5H11v-2H6.9c-1.7 0-3-1.3-3-3zm3-1v2h10v-2H6.9zm10.2-4H13v2h4.1c1.7 0 3 1.3 3 3s-1.3 3-3 3H13v2h4.1c2.7 0 4.9-2.2 4.9-5s-2.2-5-4.9-5z'
 };
 const VIEWBOX={more:'0 0 20 20'};
+let darkModeIconSequence = 0;
 export function icon(name,label=''){
+  if (name === 'darkMode') {
+    const clipId = `fp-dark-mode-clip-${++darkModeIconSequence}`;
+    const title = label ? `<title>${String(label).replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]))}</title>` : '';
+    return `<svg class="fp-icon fp-dark-mode-icon" viewBox="0 0 512 512" width="24" height="24" fill="none" aria-hidden="${label?'false':'true'}"${label?' role="img"':''}>${title}<g stroke="currentColor" stroke-width="32" stroke-linecap="round" fill="none"><path d="M256 48V80 M109 109L131 131 M381 109L403 131 M48 256H80 M432 256H464 M109 403L131 381 M381 381L403 403 M256 432V464" fill="none"/></g><defs><clipPath id="${clipId}"><circle cx="256" cy="256" r="144"/></clipPath></defs><circle cx="256" cy="256" r="128" stroke="currentColor" stroke-width="32" fill="none"/><circle cx="292" cy="220" r="108" fill="currentColor" clip-path="url(#${clipId})"/></svg>`;
+  }
   const path=PATHS[name]||PATHS.more;
   const viewBox=VIEWBOX[name]||'0 0 24 24';
   const title=label?`<title>${String(label).replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]))}</title>`:'';

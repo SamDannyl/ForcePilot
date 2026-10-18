@@ -10,15 +10,44 @@ import { getRecordings, getSettings, saveRecordings, saveSettings, escapeHtml } 
 import { icon } from './src/material-icons.js';
 import { applyTheme, watchTheme } from './src/theme.js';
 import {
-  parseTestCasePaste, createTestingSession, createEvidenceOnlyTestingSession, loadTestingSession, saveTestingSession,
-  clearTestingSession, putEvidenceBlob, getEvidenceBlob, deleteEvidenceBlob
+  parseTestCasePaste, createTestingSession, createEvidenceOnlyTestingSession, loadTestingSessionSummaries, loadTestingSessionById, saveTestingSession, summarizeTestingSession, TESTING_UI_STATE_KEY,
+  deleteTestingSession, putEvidenceBlob, getEvidenceBlob, deleteEvidenceBlob
 } from './src/testing.js';
 import { buildTestingDocx, downloadTestingDocx, getTestingDocxFilename } from './src/docx-export.js';
 import { buildTestingEvidenceZip, downloadTestingZip, getTestingZipFilename } from './src/testing-zip-export.js';
 import { showToast } from './src/toast.js';
 
+// JSZip is relatively large and is needed only for evidence exports. Load the
+// locally bundled library on demand and share the in-flight promise across exports.
+let jsZipLoadPromise = null;
+function ensureJSZipLoaded(){
+  if (typeof globalThis.JSZip === 'function') return Promise.resolve(globalThis.JSZip);
+  if (jsZipLoadPromise) return jsZipLoadPromise;
+  jsZipLoadPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = chrome.runtime.getURL('src/vendor/jszip.min.js');
+    script.async = true;
+    script.onload = () => {
+      if (typeof globalThis.JSZip === 'function') resolve(globalThis.JSZip);
+      else { jsZipLoadPromise = null; reject(new Error('The local ZIP engine did not initialize.')); }
+    };
+    script.onerror = () => {
+      jsZipLoadPromise = null;
+      reject(new Error('The local ZIP engine could not be loaded.'));
+    };
+    (document.head || document.documentElement).appendChild(script);
+  });
+  return jsZipLoadPromise;
+}
+
 const app = document.getElementById('app');
 const FIRST_RUN_TOUR_KEY = 'forcepilot.firstRunTour.seen.v1';
+const TESTING_FIRST_RUN_TOUR_KEY = 'forcepilot.testingFirstRunTour.seen.v1';
+let testingUiSaveTimer = null;
+let stopRecordingPromise = null;
+let liveRecordingRevision = 0;
+let suppressRecordingStorageRender = false;
+let liveRecordingMutationInFlight = false;
 
 // Keep a live connection so the service worker can tell whether the ForcePilot
 // side panel is actually open without performing an async state query before a
@@ -43,7 +72,10 @@ function connectForcePilotPresence(){
     const port=chrome.runtime.connect({name:'forcepilot-sidepanel'});
     forcePilotPresencePort=port;
     port.onMessage.addListener(message=>{
-      if(message?.type==='FORCEPILOT_CLOSE') closeForcePilotPanelFromCommand();
+      if(message?.type==='FORCEPILOT_CLOSE') {
+        closeForcePilotPanelFromCommand();
+        return;
+      }
     });
     port.onDisconnect.addListener(()=>{
       if(forcePilotPresencePort!==port) return;
@@ -69,7 +101,24 @@ function connectForcePilotPresence(){
 
 chrome.runtime.onMessage.addListener((message)=>{
   if(message?.type==='FORCEPILOT_CLOSE') closeForcePilotPanelFromCommand();
+  if(message?.type==='FORCEPILOT_TESTING_EVIDENCE_SAVED') {
+    void refreshTestingEvidenceAfterBackgroundCapture(String(message.sessionId||''));
+  }
 });
+
+async function refreshTestingEvidenceAfterBackgroundCapture(sessionId){
+  if(!sessionId || state.testingSession?.id!==sessionId) return;
+  try{
+    const latest=await loadTestingSessionById(sessionId);
+    if(!latest) return;
+    state.testingSession=latest;
+    const summary=summarizeTestingSession(latest);
+    state.testingSessions=[summary,...(state.testingSessions||[]).filter(item=>item.id!==sessionId)].sort((a,b)=>String(b.updatedAt||'').localeCompare(String(a.updatedAt||'')));
+    await loadTestingEvidenceUrls();
+    state.testingGeneralEvidenceExpanded=true;
+    render();
+  }catch{}
+}
 
 connectForcePilotPresence();
 window.addEventListener('pagehide',()=>{
@@ -97,11 +146,13 @@ const state = {
   recordingTabId: null,
   resultTab: 'all',
   activeSteps: [],
+  activeLookupCreation: null,
   view: 'home',
   editing: false,
   draft: null,
   progress: { current: 0, total: 0 },
   refreshing: false,
+  darkMode: false,
   addingToRecordingId: null,
   pendingRecording: null,
   pendingRecordingTabId: null,
@@ -110,8 +161,14 @@ const state = {
   isRetrying: false,
   selectionMode: false,
   selectedStepIndexes: new Set(),
+  expandedRandomizationEditors: new Set(),
   testingSession: null,
-  testingLifecycleDialog: false,
+  testingSessions: [],
+  testingShowAllSessions: false,
+  testingSessionSearch: '',
+  testingSessionMenuOpen: false,
+  testingStatusMenuId: null,
+  testingNoteOpenId: null,
   testingPasteText: '',
   testingPasteError: '',
   testingMessage: '',
@@ -124,6 +181,7 @@ const state = {
   testingAutofillActive: false,
   testingCollapsedCases: new Set(),
   testingExpandedEvidence: new Set(),
+  testingActiveCaseId: null,
   testingGeneralEvidenceExpanded: false,
   testingOpenMenu: null,
   testingExportBusy: false,
@@ -142,7 +200,11 @@ const state = {
   testingEvidenceNameDialog: null,
   testingEvidenceNameInput: '',
   testingEvidenceNameError: '',
+  testingSessionNameEditing: false,
+  testingEditingExistingSession: false,
   firstRunOpen: false,
+  testingFirstRunOpen: false,
+  testingUiHydrated: false,
 };
 
 const clone = v => JSON.parse(JSON.stringify(v));
@@ -176,9 +238,26 @@ const fieldTypeLabel = s => {
   if (r === 'date' || s?.target?.kind === 'date') return 'Date';
   if (r === 'datetime' || r === 'date/time' || s?.target?.kind === 'datetime') return 'Date/Time';
   if (r === 'time' || s?.target?.kind === 'time') return 'Time';
+  if (r === 'email' || s?.target?.sfDataType === 'email') return 'Email';
+  if (r === 'phone' || s?.target?.sfDataType === 'phone') return 'Phone';
+  if (r === 'url' || s?.target?.sfDataType === 'url') return 'URL';
+  if (['textarea','longtext','longtextarea','richtext'].includes(r) || s?.target?.kind === 'longText') return 'Long Text';
+  if (r === 'address' || s?.target?.kind === 'address' || s?.target?.fieldType === 'address') return 'Address';
   if (['double','int','integer','long','decimal','number'].includes(r) || r.includes('number') || s?.target?.kind === 'number') return 'Number';
   if (r === 'reference' || r === 'lookup' || s?.target?.reference || s?.target?.kind === 'lookup') return 'Lookup';
   return 'Text';
+};
+const fieldTypeDisplay = s => {
+  const workflow=s?.meta?.createNewRecord;
+  return fieldTypeLabel(s)==='Lookup' && workflow && Array.isArray(workflow.fields)
+    ? `Lookup + New (${workflow.fields.length})`
+    : fieldTypeLabel(s);
+};
+const fieldTypeDisplayTitle = s => {
+  const workflow=s?.meta?.createNewRecord;
+  return workflow && Array.isArray(workflow.fields)
+    ? `Creates a new ${workflow.objectLabel || 'record'} and fills ${workflow.fields.length} recorded field${workflow.fields.length===1?'':'s'}`
+    : fieldTypeLabel(s);
 };
 const statusOf = x => x?.result?.status || (x?.result?.ok ? 'filled' : 'failed');
 const valuesArray = v => Array.isArray(v) ? v : String(v ?? '').split(/\s*;\s*|\s*,\s*/).map(x => x.trim()).filter(Boolean);
@@ -191,6 +270,23 @@ const parseRelativeDate = value => { const s = String(value ?? '').trim().toLowe
 const dateFieldDisplay = s => { const meta = s?.meta || {}; if (meta.dateMode === 'relative' && Number.isFinite(Number(meta.dateOffsetDays))) return String(meta.dateExpression || dateOffsetLabel(meta.dateOffsetDays)); return String(s?.value ?? ''); };
 const shiftDateFrom = (baseISO, offset) => { const d = dateAtLocalMidnight(baseISO) || new Date(); d.setDate(d.getDate() + Number(offset)); return localDateISO(d); };
 const typeOptions = s => Array.isArray(s?.target?.options) ? s.target.options : [];
+const isAggregatePicklistText = (value, fieldLabel='') => {
+  const raw=String(value??'').trim();
+  const norm=s=>String(s??'').toLowerCase().replace(/\s+/g,' ').trim();
+  const label=norm(fieldLabel),n=norm(raw);
+  return !!raw && (/help\s*info/i.test(raw) || (label && n.startsWith(label) && n.length>label.length+8));
+};
+const recoverPicklistLabel = (value, fieldLabel, options=[]) => {
+  const raw=String(value??'').trim();
+  if(!isAggregatePicklistText(raw,fieldLabel))return value;
+  const normal=s=>String(s??'').toLowerCase().replace(/\s+/g,' ').trim();
+  const candidates=(options||[]).map(o=>({value:String(o?.value??''),label:String(o?.displayValue??o?.label??o?.value??'').trim()})).filter(o=>o.label)
+    .filter(o=>normal(raw).endsWith(normal(o.label))).sort((a,b)=>b.label.length-a.label.length);
+  if(!candidates.length)return value;
+  const longest=candidates[0].label;
+  const equallyLong=[...new Set(candidates.filter(o=>o.label.length===longest.length&&normal(o.label)===normal(longest)).map(o=>o.label))];
+  return equallyLong.length===1?longest:value;
+};
 const humanizeObjectApiName = value => {
   const raw=String(value||'').trim();
   if(!raw || /^salesforce$/i.test(raw)) return '';
@@ -221,11 +317,11 @@ function renderFirstRunOverlay() {
     <div class="first-run-dialog" role="dialog" aria-modal="true" aria-labelledby="firstRunTitle" aria-describedby="firstRunMessage">
       <div class="first-run-kicker">ForcePilot</div>
       <h2 id="firstRunTitle">Welcome to ForcePilot</h2>
-      <p class="first-run-intro" id="firstRunMessage">A simple way to test Salesforce and keep your work organized.</p>
+      <p class="first-run-intro" id="firstRunMessage">Record Salesforce changes, reuse them with Autofill, and keep your testing work organized in one place.</p>
       <div class="first-run-items">
-        <div class="first-run-item"><strong>Testing Sessions</strong><span>Run a test case step by step, or start a session without one for quick testing.</span></div>
-        <div class="first-run-item"><strong>Record &amp; Review</strong><span>Record what you do and see the fields and changes captured along the way.</span></div>
-        <div class="first-run-item"><strong>Save &amp; Autofill</strong><span>Save recordings and use them later to autofill the same fields.</span></div>
+        <div class="first-run-item"><strong>Testing Sessions</strong><span>Organize scenarios, capture screenshots, add notes, and track Pass, Fail, or Blocked results.</span></div>
+        <div class="first-run-item"><strong>Record &amp; Review</strong><span>Record Salesforce field changes, review captured values, and edit recordings before saving.</span></div>
+        <div class="first-run-item"><strong>Save &amp; Autofill</strong><span>Reuse saved recordings on compatible Salesforce records. Use saved values or configured randomization.</span></div>
       </div>
       <div class="first-run-shortcut"><span>Open/Close ForcePilot</span><strong>Shortcut: Alt + X</strong></div>
       <p class="first-run-replay-note">You can find this tour again in Settings.</p>
@@ -233,6 +329,12 @@ function renderFirstRunOverlay() {
     </div>
   </div>`;
 }
+
+function renderTestingFirstRunOverlay() {
+ return `<div class="first-run-overlay" id="testingFirstRunOverlay" role="presentation"><div class="first-run-dialog testing-first-run-dialog" role="dialog" aria-modal="true" aria-labelledby="testingFirstRunTitle"><div class="first-run-kicker">WELCOME</div><h2 id="testingFirstRunTitle">Welcome to Testing!</h2><p class="first-run-intro">Run scenario-based tests or quick checks. Capture screenshots, add notes, and track results in one place.</p><div class="first-run-items"><div class="first-run-item"><strong>1. Choose Testing Mode</strong><span>Use <b>Scenarios</b> to organize test cases or <b>Quick Testing</b> for standalone checks.</span></div><div class="first-run-item"><strong>2. Select a Scenario</strong><span>Choose a scenario to link screenshots, or use its camera or paste option.</span></div><div class="first-run-item"><strong>3. Capture Screenshots</strong><span>Click <b>Screenshot</b> or press <b>Alt + S</b>. For clean captures, close ForcePilot with <b>Alt + X</b>, take the screenshot, then reopen it. Add expected and actual behavior notes.</span></div><div class="first-run-item"><strong>4. Track Results</strong><span>Mark each scenario <b>Pass, Fail, or Blocked</b>.</span></div><div class="first-run-item"><strong>5. Export Evidence</strong><span>Export screenshots and notes to Word (.docx) or download screenshots as a ZIP.</span></div></div><p class="first-run-replay-note">You're all set!</p><button class="primary first-run-start" id="testingFirstRunGetStarted" type="button">Got it, Start Testing</button></div></div>`;
+}
+async function maybeShowTestingFirstRunTour() { try { const data = await chrome.storage.local.get(TESTING_FIRST_RUN_TOUR_KEY); if (!data?.[TESTING_FIRST_RUN_TOUR_KEY]) state.testingFirstRunOpen = true; } catch { state.testingFirstRunOpen = true; } }
+async function dismissTestingFirstRunTour() { state.testingFirstRunOpen = false; try { await chrome.storage.local.set({ [TESTING_FIRST_RUN_TOUR_KEY]: true }); } catch {} render(); }
 
 async function dismissFirstRunTour() {
   state.firstRunOpen = false;
@@ -255,6 +357,14 @@ async function initializeFirstRunTour() {
   }
 }
 
+function applyMissingButtonTitles() {
+  app.querySelectorAll('button:not([title])').forEach(button => {
+    const label = String(button.getAttribute('aria-label') || button.innerText || button.textContent || '')
+      .replace(/\s+/g, ' ').trim();
+    if (label) button.title = label;
+  });
+}
+
 function render() {
   const recs = Object.values(state.recordings)
     .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
@@ -262,16 +372,31 @@ function render() {
   const selected = state.selectedId ? state.recordings[state.selectedId] : null;
   const testingAutofillModalActive = !!state.testingSession && !!state.testingAutofillActive && (state.view === 'running' || state.view === 'result');
   const scrollTargets = [
+    '.content',
+    '#recording-field-list',
     '.testing-workspace-page',
+    '.testing-workspace-scroll',
     '.testing-preview-workspace',
     '.testing-evidence-only-page .testing-general-evidence-body',
     '.testing-summary-body',
     '.result-page .result-list'
   ];
+  const oldLiveList = document.querySelector('#recording-field-list');
+  const hadLiveRecordingList = !!oldLiveList;
+  const priorLiveStepCount = oldLiveList ? Number(oldLiveList.dataset.fpStepCount ?? state.activeSteps.length) : 0;
+  const newLiveFieldCaptured = state.activeSteps.length > priorLiveStepCount;
   const preservedScroll = Object.fromEntries(scrollTargets.map(selector => {
     const el = document.querySelector(selector);
-    return [selector, el ? el.scrollTop : null];
+    return [selector, el ? { top: el.scrollTop, left: el.scrollLeft } : null];
   }));
+  // Re-rendering the side panel replaces its DOM. Preserve all viewport scroll
+  // coordinates too, so action clicks and evidence previews never jump to top.
+  const preservedViewport = {
+    x: window.scrollX || 0,
+    y: window.scrollY || 0,
+    documentTop: document.documentElement?.scrollTop || 0,
+    bodyTop: document.body?.scrollTop || 0
+  };
   const body = testingAutofillModalActive
     ? renderTestingAutofillOverlay()
     : state.view === 'recording' || state.recording
@@ -287,25 +412,46 @@ function render() {
               : state.view === 'detail' && selected
                 ? renderDetail(selected)
                 : renderHome(recs);
-  app.innerHTML = `<div class="shell"><header class="topbar"><div class="brand"><img class="brandmark" src="branding/forcepilot-icon.png" alt="ForcePilot"><img class="wordmark" src="branding/forcepilot-wordmark.png" alt="ForcePilot"></div><div class="header-actions"><button class="iconbtn refresh-btn${state.refreshing ? ' is-loading' : ''}" id="refreshHeader" title="Refresh ForcePilot" aria-label="Refresh ForcePilot" ${state.refreshing ? 'disabled aria-busy="true"' : ''}>${icon('refresh')}</button><button class="iconbtn settings-btn" id="settings" title="Settings" aria-label="Settings">${icon('settings')}</button></div></header><main class="content">${body}</main>${state.testingEvidenceNameDialog ? renderEvidenceNameDialog() : ''}${state.testingConfirmDialog ? renderTestingConfirmDialog() : ''}</div>${state.firstRunOpen ? renderFirstRunOverlay() : ''}`;
-  document.body.classList.toggle('testing-modal-open', testingAutofillModalActive || state.testingAutofillPickerOpen || !!state.testingAssociatingEvidenceId || !!state.testingEvidenceNameDialog || !!state.testingConfirmDialog || !!state.testingLifecycleDialog || state.firstRunOpen);
+  app.innerHTML = `<div class="shell"><header class="topbar"><div class="brand"><img class="brandmark" src="branding/forcepilot-icon.png" alt="ForcePilot"><img class="wordmark" src="branding/forcepilot-wordmark.png" alt="ForcePilot"></div><div class="header-actions"><button class="iconbtn refresh-btn${state.refreshing ? ' is-loading' : ''}" id="refreshHeader" type="button" title="Refresh ForcePilot" aria-label="Refresh ForcePilot" ${state.refreshing ? 'disabled aria-busy="true"' : ''}>${icon('refresh')}</button><button class="iconbtn theme-toggle-btn" id="toggleDarkMode" type="button" title="${state.darkMode ? 'Switch to light mode' : 'Switch to dark mode'}" aria-label="${state.darkMode ? 'Switch to light mode' : 'Switch to dark mode'}" aria-pressed="${state.darkMode ? 'true' : 'false'}">${icon('darkMode')}</button><button class="iconbtn settings-btn" id="settings" type="button" title="Settings" aria-label="Settings">${icon('settings')}</button></div></header><main class="content">${body}</main>${state.testingEvidenceNameDialog ? renderEvidenceNameDialog() : ''}${state.testingConfirmDialog ? renderTestingConfirmDialog() : ''}</div>${state.firstRunOpen ? renderFirstRunOverlay() : ''}${state.testingFirstRunOpen && state.view === 'testing-dashboard' ? renderTestingFirstRunOverlay() : ''}`;
+  applyMissingButtonTitles();
+  const initialLiveList = document.getElementById('recording-field-list'); if (initialLiveList) { initialLiveList.dataset.fpRenderSignature = liveStepsRenderSignature(state.activeSteps); initialLiveList.dataset.fpStepCount = String(state.activeSteps.length); }
+  scheduleTestingUiStateSave();
+  document.body.classList.toggle('testing-modal-open', testingAutofillModalActive || state.testingAutofillPickerOpen || !!state.testingAssociatingEvidenceId || !!state.testingEvidenceNameDialog || !!state.testingConfirmDialog || state.firstRunOpen || state.testingFirstRunOpen);
   bind();
   const modal = document.querySelector('[role="dialog"][aria-modal="true"]');
-  if (modal && (state.firstRunOpen || state.testingLifecycleDialog || state.testingConfirmDialog || state.testingAutofillPickerOpen || state.testingAssociatingEvidenceId || state.testingEvidenceNameDialog)) {
+  if (modal && (state.firstRunOpen || state.testingFirstRunOpen || state.testingConfirmDialog || state.testingAutofillPickerOpen || state.testingAssociatingEvidenceId || state.testingEvidenceNameDialog)) {
     requestAnimationFrame(() => {
-      if (state.firstRunOpen) document.getElementById('firstRunGetStarted')?.focus();
-      else if (state.testingEvidenceNameDialog) document.getElementById('testingEvidenceName')?.focus();
-      else if (state.testingConfirmDialog) document.getElementById('acceptTestingConfirm')?.focus();
-      else if (state.testingLifecycleDialog) document.getElementById('resumeSavedTesting')?.focus();
-      else if (state.testingAutofillPickerOpen) document.getElementById('testingAutofillSearch')?.focus();
-      else document.getElementById('closeAssociateDialog')?.focus();
+      if (state.firstRunOpen) document.getElementById('firstRunGetStarted')?.focus({ preventScroll: true });
+      else if (state.testingFirstRunOpen) document.getElementById('testingFirstRunGetStarted')?.focus({ preventScroll: true });
+      else if (state.testingEvidenceNameDialog) document.getElementById('testingEvidenceName')?.focus({ preventScroll: true });
+      else if (state.testingConfirmDialog) document.getElementById('acceptTestingConfirm')?.focus({ preventScroll: true });
+      else if (state.testingAutofillPickerOpen) document.getElementById('testingAutofillSearch')?.focus({ preventScroll: true });
+      else document.getElementById('closeAssociateDialog')?.focus({ preventScroll: true });
     });
   }
   document.onkeydown = event => {
     const activeModal = document.querySelector('[role="dialog"][aria-modal="true"]');
+    const statusMenu = document.querySelector('.testing-status-menu');
+    if (!activeModal && state.testingStatusMenuId && statusMenu?.contains(document.activeElement) && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+      const items = [...statusMenu.querySelectorAll('[role="menuitem"]')];
+      const currentIndex = items.indexOf(document.activeElement);
+      if (items.length) {
+        event.preventDefault();
+        const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : event.key === 'ArrowDown' ? (currentIndex + 1 + items.length) % items.length : (currentIndex - 1 + items.length) % items.length;
+        items[nextIndex]?.focus({ preventScroll: true });
+      }
+      return;
+    }
+    if (!activeModal && event.key === 'Escape' && state.testingStatusMenuId) {
+      const caseId = state.testingStatusMenuId;
+      state.testingStatusMenuId = null;
+      render();
+      requestAnimationFrame(() => document.querySelector(`[data-open-testing-status="${CSS.escape(caseId)}"]`)?.focus({ preventScroll: true }));
+      return;
+    }
     if (!activeModal) return;
     if (event.key === 'Escape') {
-      const close = activeModal.querySelector('#firstRunGetStarted, #cancelTestingEvidenceName, #cancelTestingEvidenceNameAction, #cancelTestingConfirm, #cancelStartTesting, #closeAssociateDialog, #closeTestingAutofill, .testing-image-preview-close');
+      const close = activeModal.querySelector('#firstRunGetStarted, #testingFirstRunGetStarted, #cancelTestingEvidenceName, #cancelTestingEvidenceNameAction, #cancelTestingConfirm, #closeAssociateDialog, #closeTestingAutofill, .testing-image-preview-close');
       if (close) { event.preventDefault(); close.click(); }
     } else if (event.key === 'Tab') {
       const focusable = [...activeModal.querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')].filter(el => el.offsetParent !== null);
@@ -319,9 +465,22 @@ function render() {
     scrollTargets.forEach(selector => {
       const saved = preservedScroll[selector];
       const el = document.querySelector(selector);
-      if (el && Number.isFinite(saved)) el.scrollTop = saved;
+      if (selector === '#recording-field-list' && el && (newLiveFieldCaptured || (!hadLiveRecordingList && state.activeSteps.length))) {
+        // Follow a newly captured field even when an app action caused a full
+        // render. Otherwise restore the user's manual scroll position exactly.
+        el.scrollTop = el.scrollHeight;
+      } else if (el && saved && Number.isFinite(saved.top)) {
+        el.scrollTop = saved.top;
+        el.scrollLeft = saved.left || 0;
+      }
     });
+    if (window.scrollY !== preservedViewport.y || window.scrollX !== preservedViewport.x) {
+      window.scrollTo({ left: preservedViewport.x, top: preservedViewport.y, behavior: 'instant' });
+    }
+    if (document.documentElement && document.documentElement.scrollTop !== preservedViewport.documentTop) document.documentElement.scrollTop = preservedViewport.documentTop;
+    if (document.body && document.body.scrollTop !== preservedViewport.bodyTop) document.body.scrollTop = preservedViewport.bodyTop;
     if (String(state.view || '').startsWith('testing-')) autoResizeTestingTextareas();
+    positionTestingStatusMenu();
   });
 }
 
@@ -336,24 +495,20 @@ function renderHome(recs) {
   const other = state.recordingTabId && state.recordingTabId !== state.tabId;
   const hasRecordings = Object.keys(state.recordings).length > 0;
   const hasMatches = recs.length > 0;
-  const activeSession = state.testingSession;
-  const activeSessionName = activeSession?.workProduct || 'Screenshot session';
-  const activeSessionMeta = `${activeSession?.evidence?.length || 0} capture${(activeSession?.evidence?.length || 0) === 1 ? '' : 's'}`;
   return `<section class="home-page-context">
     <div class="eyebrow">Current page</div>
     <div class="context-title">${escapeHtml(currentObject)}</div>
     ${sfStatus}
   </section>
   ${other ? '<div class="notice"><strong>Recording is active in another tab.</strong><span>Use that tab to stop the recording.</span></div>' : ''}
-  <div class="home-actions actions home-actions-stack">
+  <div class="home-actions actions home-actions-inline">
     <button class="primary full-action" id="record" ${(!c || !state.forcePilotConnected || other) ? 'disabled' : ''}><span class="button-icon" aria-hidden="true">${icon('play')}</span>Record</button>
-    ${activeSession ? `<div class="testing-session-active" role="status"><div class="testing-session-active-copy"><div class="eyebrow">Testing session in progress</div><strong>${escapeHtml(activeSessionName)} · ${escapeHtml(activeSessionMeta)}</strong></div><button class="secondary" id="resumeTesting" type="button"><span class="button-icon" aria-hidden="true">${icon('checklist')}</span>Resume</button></div>` : ''}
-    <button class="secondary full-action testing-home-action" id="startTesting"><span class="button-icon" aria-hidden="true">${icon('checklist')}</span><span>${activeSession ? 'Start New Testing Session' : 'Start Testing'}</span></button>
+    <button class="secondary full-action testing-home-action" id="startTesting"><span class="button-icon" aria-hidden="true">${icon('checklist')}</span><span>Testing</span></button>
   </div>
   <section class="section recent-section">
     <div class="section-title-row"><div class="section-title-with-icon"><span class="section-title-icon" aria-hidden="true">${icon('folder')}</span><h2>Saved recordings</h2></div><span class="section-count">${recs.length}</span></div>
-    ${hasRecordings ? `<input class="search" id="search" placeholder="Search recordings…" value="${escapeHtml(state.filter)}" aria-label="Search recordings"><div class="list">${hasMatches ? recs.slice(0,12).map(r => `<button class="recording-row" data-id="${escapeHtml(r.id)}"><span class="row-main"><span class="recording-name">${escapeHtml(recordingTitle(r))}</span><span class="row-meta">${escapeHtml(recordingMeta(r))}</span></span><span class="row-chevron" aria-hidden="true">${icon('arrowRight')}</span></button>`).join('') : `<div class="empty-state"><strong>No recordings match</strong><span>Try a different search term.</span></div>`}</div>` : `<div class="empty-state"><strong>No saved recordings</strong><span>Record Salesforce field changes to create your first recording.</span></div>`}
-  </section>${state.testingLifecycleDialog ? renderTestingLifecycleDialog() : ''}`;
+    ${hasRecordings ? `<input class="search" id="search" placeholder="Search recordings…" value="${escapeHtml(state.filter)}" aria-label="Search recordings"><div class="list">${hasMatches ? recs.slice(0,12).map(r => `<button class="recording-row" data-id="${escapeHtml(r.id)}"><span class="row-main"><span class="recording-name">${escapeHtml(recordingTitle(r))}</span><span class="row-meta">${escapeHtml(recordingMeta(r))}</span></span><span class="row-chevron" aria-hidden="true">${icon('arrowRight')}</span></button>`).join('') : `<div class="empty-state"><strong>No recordings match</strong><span>Try a different search term.</span></div>`}</div>` : `<div class="empty-state"><strong>No Saved Recordings</strong><span>Record Salesforce field changes to create your first recording.</span></div>`}
+  </section>`;
 }
 
 function renderTestingConfirmDialog() {
@@ -383,33 +538,39 @@ function testingUpdatedLabel(value) {
 }
 
 function renderEvidenceNameDialog() {
-  const mode = state.testingEvidenceNameDialog?.mode === 'finish' ? 'finish' : 'start';
+  const mode = state.testingEvidenceNameDialog?.mode || 'start';
+  const isExport = mode === 'export-word' || mode === 'export-zip';
   const isFinish = mode === 'finish';
-  const title = isFinish ? 'Name evidence session' : 'Name evidence session';
-  const message = 'Use a file name for the Word document and screenshots ZIP.';
+  const title = isExport ? 'Name export file' : 'Name your evidence session';
+  const hasMultipleWorkProducts = (state.testingSession?.sourceWorkProducts || []).length > 1;
+  const message = isExport
+    ? (hasMultipleWorkProducts
+      ? 'Multiple Work Products were detected. Enter the filename to use for this export and future exports in this session.'
+      : 'No Work Product was detected. Enter the filename to use for this export and future exports in this session.')
+    : 'This name will be used for the exported .docx and .zip files.';
   const value = state.testingEvidenceNameInput || '';
   const error = state.testingEvidenceNameError ? `<div class="testing-name-error" id="testingEvidenceNameError" role="alert">${escapeHtml(state.testingEvidenceNameError)}</div>` : '';
+  const confirmLabel = isExport ? 'Use filename' : mode === 'name-existing-session' ? 'Save name' : isFinish ? 'Save & finish' : 'Start session';
+  const helpText = mode === 'export-word'
+    ? 'The .docx extension is added automatically.'
+    : mode === 'export-zip'
+      ? 'The .zip extension is added automatically.'
+      : 'The .docx and .zip extensions are added automatically.';
   return `<div class="testing-dialog-backdrop testing-name-dialog-backdrop" role="presentation">
     <div class="testing-dialog testing-name-dialog" role="dialog" aria-modal="true" aria-labelledby="testingEvidenceNameTitle" aria-describedby="testingEvidenceNameDescription">
-      <div class="testing-dialog-header">
-        <div><h2 id="testingEvidenceNameTitle">${title}</h2><p id="testingEvidenceNameDescription">${message}</p></div>
-        <button class="iconbtn" id="cancelTestingEvidenceName" type="button" aria-label="Cancel">${icon('close')}</button>
-      </div>
+      <div class="testing-dialog-header"><div><h2 id="testingEvidenceNameTitle">${escapeHtml(title)}</h2><p id="testingEvidenceNameDescription">${message}</p></div><button class="iconbtn" id="cancelTestingEvidenceName" type="button" aria-label="Close">${icon('close')}</button></div>
       <div class="testing-name-dialog-body">
-        <label class="testing-name-field" for="testingEvidenceName"><span>File name</span><input id="testingEvidenceName" type="text" value="${escapeHtml(value)}" maxlength="160" autocomplete="off" placeholder="US#" aria-describedby="testingEvidenceNameHelp${state.testingEvidenceNameError ? ' testingEvidenceNameError' : ''}" ${state.testingEvidenceNameError ? 'aria-invalid="true"' : ''}></label>
-        <div class="testing-name-help" id="testingEvidenceNameHelp">Used as the base export name.</div>
-        ${error}
+        <label class="testing-name-field" for="testingEvidenceName"><span>File name</span><input id="testingEvidenceName" type="text" value="${escapeHtml(value)}" maxlength="160" autocomplete="off" placeholder="e.g. US#" aria-describedby="testingEvidenceNameHelp${state.testingEvidenceNameError ? ' testingEvidenceNameError' : ''}" ${state.testingEvidenceNameError ? 'aria-invalid="true"' : ''}></label>
+        <div class="testing-name-help" id="testingEvidenceNameHelp">${helpText}</div>${error}
       </div>
-      <div class="testing-name-actions">
-        <button class="secondary action-button" id="cancelTestingEvidenceNameAction" type="button">Cancel</button>
-        <button class="primary action-button" id="confirmTestingEvidenceName" type="button">${isFinish ? 'Save & finish' : 'Start session'}</button>
-      </div>
+      <div class="testing-name-actions"><button class="secondary action-button" id="cancelTestingEvidenceNameAction" type="button">Cancel</button><button class="primary action-button" id="confirmTestingEvidenceName" type="button">${confirmLabel}</button></div>
     </div>
   </div>`;
 }
 
 function openEvidenceNameDialog(mode, initialValue = '') {
-  state.testingEvidenceNameDialog = { mode: mode === 'finish' ? 'finish' : 'start' };
+  const allowedModes = ['start', 'start-test-cases', 'name-existing-session', 'finish', 'export-word', 'export-zip'];
+  state.testingEvidenceNameDialog = { mode: allowedModes.includes(mode) ? mode : 'start' };
   state.testingEvidenceNameInput = String(initialValue || '');
   state.testingEvidenceNameError = '';
   render();
@@ -421,17 +582,18 @@ function closeEvidenceNameDialog() {
   state.testingEvidenceNameDialog = null;
   state.testingEvidenceNameInput = '';
   state.testingEvidenceNameError = '';
-  if (mode === 'start') {
+  if (mode === 'start') state.view = 'testing-paste';
+  if (mode === 'start-test-cases') {
+    state.testingSession = null;
     state.view = 'testing-paste';
-    render();
-  } else {
-    render();
   }
+  state.testingSessionNameEditing = false;
+  render();
 }
 
 async function confirmEvidenceNameDialog() {
-  const mode = state.testingEvidenceNameDialog?.mode === 'finish' ? 'finish' : 'start';
-  const name = String(state.testingEvidenceNameInput || '').trim();
+  const mode = state.testingEvidenceNameDialog?.mode || 'start';
+  const name = String(state.testingEvidenceNameInput || '').trim().replace(/\.(?:docx|zip)$/i, '');
   if (!name) {
     state.testingEvidenceNameError = 'Enter a file name to continue.';
     render();
@@ -441,13 +603,35 @@ async function confirmEvidenceNameDialog() {
   state.testingEvidenceNameError = '';
   state.testingEvidenceNameDialog = null;
   state.testingEvidenceNameInput = '';
+
   if (mode === 'start') {
     await createAndStartEvidenceOnlySession(name);
-  } else {
+  } else if (mode === 'start-test-cases') {
+    const session = state.testingSession;
+    if (!session) { state.view = 'testing-paste'; render(); return; }
+    session.sessionName = name;
+    session.exportFilename = name;
+    await continueImportedTestingSession();
+  } else if (mode === 'name-existing-session') {
+    if (!state.testingSession) { state.view = 'testing-dashboard'; render(); return; }
+    state.testingSession.sessionName = name;
+    state.testingSession.exportFilename = name;
+    await persistTestingSession();
+    state.view = 'testing-workspace';
+    await loadTestingEvidenceUrls();
+    render();
+  } else if (mode === 'finish') {
     if (!state.testingSession) { state.view = 'home'; render(); return; }
-    state.testingSession.workProduct = name;
+    state.testingSession.sessionName = name;
+    state.testingSession.exportFilename = name;
     await persistTestingSession();
     await completeTestingSession();
+  } else {
+    if (!state.testingSession) return;
+    state.testingSession.exportFilename = name;
+    await persistTestingSession();
+    if (mode === 'export-word') await exportTestingSessionWord();
+    else await exportTestingSessionZip();
   }
 }
 
@@ -457,35 +641,21 @@ function handleEvidenceNameKeydown(event) {
   if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); confirmEvidenceNameDialog(); }
 }
 
-function renderTestingLifecycleDialog() {
-  const session = state.testingSession;
-  const name = session?.workProduct || 'Screenshot session';
-  return `<div class="testing-dialog-backdrop" role="presentation"><div class="testing-dialog testing-lifecycle-dialog" role="dialog" aria-modal="true" aria-labelledby="testingLifecycleTitle"><div class="testing-dialog-header"><div><h2 id="testingLifecycleTitle">Testing session in progress</h2><p>${escapeHtml(name)} · ${session?.testCases?.length || 0} test cases · ${session?.evidence?.length || 0} captures</p></div><button class="iconbtn" id="cancelStartTesting" type="button" aria-label="Cancel">${icon('close')}</button></div><div class="testing-dialog-list"><p>Resume the saved session or start a new one.</p><div class="testing-lifecycle-actions"><button class="secondary action-button" id="resumeSavedTesting" type="button">Resume Testing</button><button class="danger action-button" id="discardAndStartTesting" type="button">Start fresh</button><button class="secondary action-button" id="cancelStartTestingAction" type="button">Cancel</button></div></div></div></div>`;
-}
-
-
 const testingObjectUrls = new Map();
 
-function testingStepById(session, stepId) {
-  for (const tc of session?.testCases || []) {
-    const step = (tc.steps || []).find(item => item.id === stepId);
-    if (step) return { testCase: tc, step };
-  }
-  return null;
-}
-
-function testingStepEvidence(session, stepId) {
-  return (session?.evidence || []).filter(item => item.stepId === stepId);
+function testingCaseEvidence(session, testCaseId) {
+  return (session?.evidence || []).filter(item => item.testCaseId === testCaseId);
 }
 
 function testingUnassociatedEvidence(session) {
-  return (session?.evidence || []).filter(item => !item.stepId);
+  const caseIds = new Set((session?.testCases || []).map(tc => tc.id));
+  return (session?.evidence || []).filter(item => !item.testCaseId || !caseIds.has(item.testCaseId));
 }
 
-function testingStepLabel(session, stepId) {
-  if (!stepId) return 'Unassociated';
-  const hit = testingStepById(session, stepId);
-  return hit ? `${hit.testCase.title} · Step ${hit.step.index}` : 'Unassociated';
+function testingCaseLabel(session, testCaseId) {
+  if (!testCaseId) return 'Unassigned';
+  const tc = (session?.testCases || []).find(item => item.id === testCaseId);
+  return tc?.title || 'Unassigned';
 }
 
 async function loadTestingEvidenceUrls() {
@@ -510,13 +680,77 @@ function revokeTestingObjectUrl(evidenceId) {
 async function persistTestingSession() {
   if (!state.testingSession) return;
   state.testingSession.updatedAt = new Date().toISOString();
-  await saveTestingSession(state.testingSession);
+  const saved = await saveTestingSession(state.testingSession);
+  if (!saved) return;
+  state.testingSession = saved;
+  const summary = summarizeTestingSession(saved);
+  const index = (state.testingSessions || []).findIndex(session => session.id === saved.id);
+  if (index >= 0) state.testingSessions[index] = summary;
+  else state.testingSessions = [summary, ...(state.testingSessions || [])];
+  state.testingSessions.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
 }
 
 function testingToast(message, kind = 'success') { showToast(message, { type: kind }); }
 function testingError(message) { showToast(message || 'Something went wrong.', { type: 'error', duration: 3400 }); }
 
+function testingSessionName(session) {
+  return String(session?.sessionName || session?.workProduct || session?.exportFilename || '').trim();
+}
+
+function testingSessionMeta(session) {
+  const captures = session?.evidence?.length || 0;
+  if (isEvidenceOnlyTesting(session)) return `${captures} screenshot${captures === 1 ? '' : 's'}`;
+  const cases = session?.testCaseCount ?? session?.testCases?.length ?? 0;
+  return `${cases} scenario${cases === 1 ? '' : 's'} · ${captures} screenshot${captures === 1 ? '' : 's'}`;
+}
+
+function renderTestingDashboard() {
+  const sessions = [...(state.testingSessions || [])].sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  const query = String(state.testingSessionSearch || '').trim().toLocaleLowerCase();
+  // Session search intentionally matches the session name only. Counts,
+  // timestamps, IDs, and mode are display metadata, not searchable content.
+  const matchingSessions = query
+    ? sessions.filter(session => String(testingSessionName(session) || 'Untitled testing session').trim().toLocaleLowerCase().includes(query))
+    : sessions;
+  const visibleSessions = state.testingShowAllSessions ? matchingSessions : matchingSessions.slice(0, 6);
+  const rows = visibleSessions.map(session => {
+      const name = testingSessionName(session) || 'Untitled testing session';
+      const caseCount = Number(session.testCaseCount || 0);
+      const screenshotCount = Number(session.evidenceCount || 0);
+      const progress = session.mode === 'evidence-only'
+        ? `${screenshotCount} screenshot${screenshotCount === 1 ? '' : 's'}`
+        : `${caseCount} scenario${caseCount === 1 ? '' : 's'} · ${screenshotCount} screenshot${screenshotCount === 1 ? '' : 's'}`;
+      return `<article class="testing-session-row" data-testing-session-row="${escapeHtml(session.id)}">
+        <div class="testing-session-row-main">
+          <strong>${escapeHtml(name)}</strong>
+          <span>${escapeHtml(progress)}</span>
+          <small>Last active: ${escapeHtml(testingUpdatedLabel(session.updatedAt))}</small>
+        </div>
+        <div class="testing-session-row-actions">
+          <button class="secondary testing-resume-button" type="button" data-resume-testing-session="${escapeHtml(session.id)}">Resume</button>
+          <button class="testing-session-delete" type="button" data-delete-testing-session="${escapeHtml(session.id)}" aria-label="Delete ${escapeHtml(name)}" title="Delete session">${icon('delete')}</button>
+        </div>
+      </article>`;
+    }).join('');
+  const emptyContent = sessions.length
+    ? `<div class="empty-state"><strong>No sessions match</strong><span>Try a different search term.</span></div>`
+    : `<div class="empty-state"><strong>No Saved Sessions</strong><span>Start a new session to begin testing.</span></div>`;
+  const sessionList = sessions.length
+    ? `<input class="search testing-session-search" id="testingSessionSearch" type="search" placeholder="Search sessions…" value="${escapeHtml(state.testingSessionSearch || '')}" aria-label="Search saved sessions"><div class="list testing-session-list">${rows || emptyContent}</div>`
+    : emptyContent;
+
+  return `<section class="testing-page testing-dashboard-page">
+    ${renderTestingHeader('Testing Sessions', 'Start a new session or resume an existing one.', 'testingDashboardBack', '', 'Workspace')}
+    <button class="primary testing-new-session-button" id="startNewTestSession" type="button">${icon('add')}<span>Start a new session</span></button>
+    <section class="section recent-section testing-sessions-section">
+      <div class="section-title-row"><div class="section-title-with-icon"><span class="section-title-icon" aria-hidden="true">${icon('folder')}</span><h2>Saved Sessions</h2></div><span class="section-count">${sessions.length}</span></div>
+      ${sessionList}
+      ${matchingSessions.length > 6 ? `<button class="testing-view-all" id="testingViewAllSessions" type="button">${state.testingShowAllSessions ? 'Show recent only' : 'View all →'}</button>` : ''}
+    </section>
+  </section>`;
+}
 function renderTesting() {
+  if (state.view === 'testing-dashboard') return renderTestingDashboard();
   if (state.view === 'testing-paste') return renderTestingPaste();
   if (state.view === 'testing-preview') return renderTestingPreview();
   if (state.view === 'testing-summary') return renderTestingSummary();
@@ -527,13 +761,28 @@ function isEvidenceOnlyTesting(session = state.testingSession) {
   return String(session?.mode || '').toLowerCase() === 'evidence-only' || (!session?.testCases?.length && session?.mode !== 'test-cases');
 }
 
-function renderTestingHeader(title, subtitle = '', backId = 'testingBack', actionHtml = '') {
+function renderTestingHeader(title, subtitle = '', backId = 'testingBack', actionHtml = '', eyebrow = 'Testing') {
   return `<div class="testing-topbar fp-route-header">
     <div class="testing-heading-wrap">
       ${backButton('Back', backId)}
-      <div class="testing-heading"><div class="eyebrow">Testing</div><h1>${escapeHtml(title)}</h1>${subtitle ? `<div class="testing-subtitle">${escapeHtml(subtitle)}</div>` : ''}</div>
+      <div class="testing-heading"><div class="eyebrow">${escapeHtml(eyebrow)}</div><h1>${escapeHtml(title)}</h1>${subtitle ? `<div class="testing-subtitle">${escapeHtml(subtitle)}</div>` : ''}</div>
     </div>
-    ${actionHtml ? `<div class="testing-header-actions">${actionHtml}</div>` : ''}
+    <div class="testing-header-actions">${actionHtml}</div>
+  </div>`;
+}
+
+function renderTestingSessionToolbar() {
+  const session = state.testingSession;
+  if (!session || state.view !== 'testing-workspace') return '';
+  const sessions = state.testingSessions || [];
+  return `<div class="testing-session-toolbar" aria-label="Testing session controls">
+    <div class="testing-session-select-wrap">
+      <select class="testing-session-selector" id="testingSessionSelector" aria-label="Current testing session">
+        ${sessions.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === session.id ? 'selected' : ''}>${escapeHtml(testingSessionName(item) || 'Untitled testing session')}</option>`).join('')}
+      </select>
+      <span class="testing-session-select-arrow" aria-hidden="true">${icon('chevron')}</span>
+    </div>
+    <button class="secondary testing-session-new-inline" id="startNewTestSessionInline" type="button">${icon('add')}<span>New</span></button>
   </div>`;
 }
 
@@ -541,26 +790,24 @@ function renderTestingPaste() {
   const error = state.testingPasteError ? `<div class="testing-message error" role="alert">${escapeHtml(state.testingPasteError)}</div>` : '';
   const hasPaste = Boolean(String(state.testingPasteText || '').trim());
   return `<section class="testing-page testing-start-page">
-    ${renderTestingHeader('Start Testing', 'Choose how you want to test.')}
+    ${renderTestingHeader('Start Testing', 'Choose how to start testing.')}
     ${error}
     <section class="testing-card testing-paste-card">
-      <div class="testing-paste-header">
-        <div class="testing-paste-heading">
-          <div class="testing-paste-title-row"><h2>Use test cases</h2><button class="secondary testing-template-download" id="downloadTestingTemplate" type="button">${icon('fileDownload')}<span>Download template</span></button></div>
-          <p>Paste your test-case table below.</p>
-        </div>
-      </div>
+      <div class="testing-paste-header"><div class="testing-paste-heading">
+        <div class="testing-paste-title-row"><h2>Import scenarios</h2></div>
+        <p>Paste scenario titles or a table from your QA sheet.</p>
+      </div></div>
       <div class="testing-paste-field">
-        <textarea id="testingPaste" class="testing-paste" spellcheck="false" placeholder="Paste test cases…">${escapeHtml(state.testingPasteText)}</textarea>
-        <div class="testing-format-note"><span>Expected format:</span> Work Product · Object Type · Test Case · Step Index · Steps</div>
-        <div class="testing-paste-help">Repeated blank cells use the previous test-case context.</div>
+        <textarea id="testingPaste" class="testing-paste" spellcheck="false" placeholder="Paste scenario titles or a table copied from Excel or Markdown…">${escapeHtml(state.testingPasteText)}</textarea>
+        <div class="testing-format-note">Accepted formats: Excel/CSV, Markdown tables, or plain-text lists.</div>
+        <div class="testing-paste-help">Only scenario titles are imported; other columns are ignored.</div>
       </div>
-      <div class="testing-actions"><button class="primary action-button" id="parseTestingPaste" type="button" ${hasPaste ? '' : 'disabled'}>Continue</button></div>
+      <div class="testing-actions"><button class="primary action-button" id="parseTestingPaste" type="button" ${hasPaste ? '' : 'disabled'}>Import scenarios</button></div>
     </section>
     <div class="testing-skip-divider"><span>or</span></div>
     <section class="testing-start-choice">
-      <button class="secondary testing-skip-button" id="skipTestingCases" type="button">${icon('camera')}<span>Start without test cases</span></button>
-      <div class="testing-skip-note">Capture screenshots and use Autofill without preparing test steps.</div>
+      <button class="secondary testing-skip-button" id="skipTestingCases" type="button">${icon('camera')}<span>Start without scenarios</span></button>
+      <div class="testing-skip-note">Capture screenshots and use Autofill without importing scenarios.</div>
     </section>
   </section>`;
 }
@@ -568,56 +815,33 @@ function renderTestingPaste() {
 function renderTestingPreview() {
   const session = state.testingSession;
   const testCases = session?.testCases || [];
-  const totalSteps = testCases.reduce((sum, tc) => sum + (tc.steps?.length || 0), 0);
-  const error = state.testingPasteError ? `<div class="testing-message error" role="alert">${escapeHtml(state.testingPasteError)}</div>` : '';
+  const warnings = Array.isArray(session?.importWarnings) ? session.importWarnings : [];
+  const errors = state.testingPasteError ? `<div class="testing-message error" role="alert">${escapeHtml(state.testingPasteError)}</div>` : '';
+  const warningBlock = warnings.length ? `<div class="testing-message warning" role="status"><strong>Review import</strong><ul>${warnings.map(w => `<li>${escapeHtml(w)}</li>`).join('')}</ul></div>` : '';
+  const editingExisting = Boolean(state.testingEditingExistingSession);
   return `<section class="testing-page testing-preview-page">
     <div class="testing-preview-header">
-      ${renderTestingHeader('Review test cases', `${session?.workProduct || ''} · ${testCases.length} test case${testCases.length === 1 ? '' : 's'}`, 'backToTestingPaste')}
-      <button class="primary testing-start-button" data-start-testing type="button">${icon('play')}<span>Start testing</span></button>
+      ${renderTestingHeader(editingExisting ? 'Edit scenarios' : 'Review scenarios', editingExisting ? 'Edit scenario titles and the session filename.' : `${testCases.length} scenario${testCases.length === 1 ? '' : 's'} detected`, editingExisting ? 'backFromTestingEditor' : 'backToTestingPaste')}
+      <button class="primary testing-start-button" data-start-testing type="button" ${testCases.length ? '' : 'disabled'}>${icon(editingExisting ? 'check' : 'play')}<span>${editingExisting ? 'Save changes' : 'Start testing'}</span></button>
     </div>
     <div class="testing-preview-workspace">
-      ${error}
+      ${errors}${warningBlock}
       <section class="testing-editor-summary-card">
-        <div class="testing-editor-summary-top">
-          <div><h2>Test case details</h2><span class="testing-row-count">${testCases.length} case${testCases.length === 1 ? '' : 's'} · ${totalSteps} step${totalSteps === 1 ? '' : 's'}</span></div>
-        </div>
+        <div class="testing-editor-summary-top"><div><h2>Scenarios</h2><span class="testing-row-count">${testCases.length} scenario${testCases.length === 1 ? '' : 's'}</span></div></div>
         <div class="testing-editor-meta">
-          <label class="testing-editor-meta-field"><span>Work Product</span><input data-testing-field="workProduct" data-tc-id="${escapeHtml(testCases[0]?.id || '')}" value="${escapeHtml(session?.workProduct || '')}" aria-label="Work Product"></label>
-        </div>
-        <div class="testing-editor-controls">
-          <span class="testing-editor-controls-label">Review</span>
-          <button class="testing-text-button" type="button" data-testing-expand-all>${icon('chevron')}<span>Expand all</span></button>
-          <button class="testing-text-button" type="button" data-testing-collapse-all>${icon('chevron')}<span>Collapse all</span></button>
+          <label class="testing-editor-meta-field"><span>Session name / default export filename</span><input data-testing-field="sessionName" value="${escapeHtml(testingSessionName(session))}" maxlength="160" placeholder="Session name" aria-label="Session name and default export filename"></label>
+          ${(session?.sourceWorkProducts || []).length > 1 ? `<div class="testing-message warning">Multiple Work Products were detected. Confirm or edit the session name used for exports.</div>` : ''}
         </div>
       </section>
       <section class="testing-editor-cases">
-        ${testCases.map((tc, tcIndex) => {
-          const steps = tc.steps || [];
-          const collapsed = state.testingCollapsedCases.has(tc.id);
-          return `<article class="testing-editor-case ${collapsed ? 'is-collapsed' : ''}" data-testing-case-id="${escapeHtml(tc.id)}">
-            <div class="testing-editor-case-header">
-              <button class="testing-editor-case-toggle" type="button" data-toggle-testing-case="${escapeHtml(tc.id)}" aria-expanded="${collapsed ? 'false' : 'true'}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(tc.title)}">
-                <span class="testing-editor-case-number">TC_${tcIndex + 1}</span>
-                <span class="testing-editor-case-label">Test Case</span>
-                ${icon('chevron')}
-              </button>
-              <span class="testing-editor-case-meta">${steps.length} step${steps.length === 1 ? '' : 's'}</span>
-            </div>
-            ${collapsed ? '' : `<div class="testing-editor-case-body">
-              <label class="testing-editor-title testing-editor-title-compact"><span>Test Case</span><input data-testing-field="title" data-tc-id="${escapeHtml(tc.id)}" value="${escapeHtml(tc.title)}" aria-label="Test Case ${tcIndex + 1} title"></label>
-              <div class="testing-editor-steps">
-                ${steps.map((step, stepIndex) => `<div class="testing-editor-step" data-testing-step-id="${escapeHtml(step.id)}">
-                  <span class="testing-editor-step-number">${stepIndex + 1}</span>
-                  <label class="testing-editor-step-field"><span>Step ${stepIndex + 1}</span><textarea data-testing-field="stepText" data-tc-id="${escapeHtml(tc.id)}" data-step-id="${escapeHtml(step.id)}" rows="1" aria-label="Step ${stepIndex + 1}">${escapeHtml(step.text)}</textarea></label>
-                </div>`).join('')}
-                <button class="testing-add-step" type="button" data-add-step-to-case="${escapeHtml(tc.id)}">${icon('add')}<span>Add step</span></button>
-              </div>
-            </div>`}
-          </article>`;
-        }).join('')}
+        ${testCases.map((tc, tcIndex) => `<article class="testing-editor-case" data-testing-case-id="${escapeHtml(tc.id)}">
+          <div class="testing-editor-case-header"><div class="testing-editor-case-heading"><span class="testing-editor-case-number">Scenario ${tcIndex + 1}</span></div><button class="testing-case-remove-preview" type="button" data-delete-test-case="${escapeHtml(tc.id)}" aria-label="Remove Scenario ${tcIndex + 1}" title="Remove scenario">${icon('delete')}</button></div>
+          ${tc.importWarning ? `<div class="testing-message warning">${escapeHtml(tc.importWarning)}</div>` : ''}
+          <label class="testing-editor-title testing-editor-title-compact"><textarea data-testing-field="title" data-tc-id="${escapeHtml(tc.id)}" rows="2" aria-label="Scenario ${tcIndex + 1} title" placeholder="Enter scenario title">${escapeHtml(tc.title)}</textarea></label>
+        </article>`).join('')}
       </section>
-      <button class="testing-add-test-case" type="button" data-add-test-case>${icon('add')}<span>Add test case</span></button>
-      <section class="testing-editor-note">${icon('edit')}<span>Changes save automatically. Step numbers stay in order.</span></section>
+      <button class="testing-add-test-case" type="button" data-add-test-case>${icon('add')}<span>Add scenario</span></button>
+      <section class="testing-editor-note">${icon('edit')}<span>Each entry becomes one independent scenario. Step rows are not imported.</span></section>
     </div>
   </section>`;
 }
@@ -632,42 +856,103 @@ function renderTestingEvidenceCard(evidence, session) {
   const capturedDate = new Date(evidence.capturedAt);
   const capturedTime = capturedDate.toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
   const capturedFull = capturedDate.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' });
+  const noteOpen = state.testingNoteOpenId === evidence.id;
+  const note = String(evidence.note || '').trim();
   return `<article class="testing-evidence-card" data-evidence-id="${escapeHtml(evidence.id)}">
     <button class="testing-evidence-preview" type="button" data-preview-evidence="${escapeHtml(evidence.id)}" aria-label="Preview captured evidence"><img src="${url || ''}" alt="Captured Salesforce evidence"></button>
     <div class="testing-evidence-meta" title="Captured ${escapeHtml(capturedFull)}">
       <span class="testing-evidence-time">${escapeHtml(capturedTime)}</span>
-      <div class="testing-evidence-actions">
+      <div class="testing-evidence-actions${isEvidenceOnlyTesting(session) ? ' is-evidence-only' : ''}">
+        ${isEvidenceOnlyTesting(session) ? '' : `<button type="button" class="testing-evidence-icon-action" data-associate-evidence="${escapeHtml(evidence.id)}" title="Associate with a scenario" aria-label="Associate screenshot with a scenario">${icon('link')}</button>`}
         <button type="button" class="testing-evidence-icon-action" data-copy-evidence="${escapeHtml(evidence.id)}" title="Copy screenshot" aria-label="Copy screenshot">${icon('contentCopy')}</button>
-        ${isEvidenceOnlyTesting(session) ? '' : `<button type="button" class="testing-evidence-icon-action" data-associate-evidence="${escapeHtml(evidence.id)}" title="Associate with a step" aria-label="Associate screenshot with a step">${icon('link')}</button>`}
+        <button type="button" class="testing-evidence-icon-action${note ? ' has-note' : ''}" data-note-evidence="${escapeHtml(evidence.id)}" title="${note ? 'Edit note' : 'Add note'}" aria-label="${note ? 'Edit note' : 'Add note'}">${icon('noteAdd')}</button>
         <button type="button" class="testing-evidence-icon-action danger" data-remove-evidence="${escapeHtml(evidence.id)}" title="Remove screenshot" aria-label="Remove screenshot">${icon('delete')}</button>
       </div>
     </div>
+    ${noteOpen ? `<div class="testing-inline-note-editor"><textarea data-note-input="${escapeHtml(evidence.id)}" rows="1" placeholder="Add a note…">${escapeHtml(note)}</textarea><div class="testing-inline-note-actions"><button class="secondary" type="button" data-note-cancel="${escapeHtml(evidence.id)}">Cancel</button><button class="primary" type="button" data-note-save="${escapeHtml(evidence.id)}">Save</button></div></div>` : ''}
   </article>`;
 }
 
-function renderTestingStep(session, tc, step) {
-  const evidence = testingStepEvidence(session, step.id);
-  const current = session.currentEvidenceStepId === step.id;
-  const expanded = state.testingExpandedEvidence.has(step.id);
-  return `<div class="testing-step ${current ? 'is-current' : ''}">
-    <div class="testing-step-row">
-      <span class="testing-step-index">${escapeHtml(step.index)}</span>
-      <div class="testing-step-body"><div class="testing-step-text">${escapeHtml(step.text)}</div><div class="testing-step-hint">${current ? 'New general captures attach here.' : evidence.length ? `${evidence.length} evidence capture${evidence.length === 1 ? '' : 's'}` : 'No evidence yet'}</div></div>
-      ${evidence.length ? `<button class="testing-evidence-toggle" type="button" data-toggle-step-evidence="${escapeHtml(step.id)}" aria-expanded="${expanded ? 'true' : 'false'}" title="${expanded ? 'Hide evidence' : 'Show evidence'}" aria-label="${expanded ? 'Hide evidence' : 'Show evidence'} for Step ${escapeHtml(step.index)}">${icon('chevron')}</button>` : '<span class="testing-evidence-toggle-placeholder" aria-hidden="true"></span>'}
-      <button class="testing-step-camera" type="button" data-capture-step="${escapeHtml(step.id)}" title="Capture screenshot for this step" aria-label="Capture screenshot for Step ${escapeHtml(step.index)}">${icon('camera')}</button>
-    </div>
-    ${evidence.length && expanded ? `<div class="testing-evidence-grid">${evidence.map(item => renderTestingEvidenceCard(item, session)).join('')}</div>` : ''}
+function testingStatusLabel(status) {
+  return ({ pass: 'Pass', fail: 'Fail', blocked: 'Blocked', 'not-marked': 'Not marked' })[status] || 'Not marked';
+}
+
+function testingStatusDot(status) {
+  const klass = status === 'pass' ? 'pass' : status === 'fail' ? 'fail' : status === 'blocked' ? 'blocked' : 'not-marked';
+  return `<span class="testing-status-dot ${klass}" aria-hidden="true"></span>`;
+}
+
+function testingCaseStatus(tc) {
+  const status = ['pass', 'fail', 'blocked', 'not-marked'].includes(String(tc?.status || '').toLowerCase()) ? String(tc.status).toLowerCase() : 'not-marked';
+  return status;
+}
+
+function renderTestingStatusMenu(tc) {
+  if (state.testingStatusMenuId !== tc.id) return '';
+  const status = testingCaseStatus(tc);
+  return `<div class="testing-status-menu" data-testing-status-menu="${escapeHtml(tc.id)}" role="menu" aria-label="Scenario result">
+    ${['pass', 'fail', 'blocked'].map(value => `<button type="button" role="menuitem" class="testing-status-option ${status === value ? 'is-selected' : ''}" data-testing-status="${escapeHtml(value)}" data-testing-status-tc="${escapeHtml(tc.id)}">${testingStatusDot(value)}<span>${testingStatusLabel(value)}</span></button>`).join('')}
   </div>`;
 }
 
+function positionTestingStatusMenu() {
+  const menu = document.querySelector('.testing-status-menu');
+  if (!menu) return;
+  const caseId = menu.dataset.testingStatusMenu;
+  const trigger = [...document.querySelectorAll('[data-open-testing-status]')]
+    .find(button => button.dataset.openTestingStatus === caseId);
+  if (!trigger) return;
+
+  const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+  const viewportHeight = document.documentElement.clientHeight || window.innerHeight;
+  const margin = 8;
+  const gap = 6;
+  menu.style.visibility = 'hidden';
+  menu.style.left = '0px';
+  menu.style.top = '0px';
+  menu.style.right = 'auto';
+  menu.style.bottom = 'auto';
+  menu.style.maxHeight = `${Math.max(40, viewportHeight - margin * 2)}px`;
+  menu.style.overflowY = 'auto';
+
+  const naturalHeight = menu.scrollHeight;
+  const menuWidth = Math.min(menu.getBoundingClientRect().width, viewportWidth - margin * 2);
+  const triggerRect = trigger.getBoundingClientRect();
+  const availableAbove = Math.max(0, triggerRect.top - gap - margin);
+  const availableBelow = Math.max(0, viewportHeight - triggerRect.bottom - gap - margin);
+  let top;
+
+  if (naturalHeight <= availableBelow) {
+    top = triggerRect.bottom + gap;
+  } else if (naturalHeight <= availableAbove) {
+    top = triggerRect.top - naturalHeight - gap;
+  } else if (availableBelow >= availableAbove) {
+    menu.style.maxHeight = `${Math.max(40, Math.min(availableBelow, viewportHeight - margin * 2))}px`;
+    top = triggerRect.bottom + gap;
+  } else {
+    menu.style.maxHeight = `${Math.max(40, Math.min(availableAbove, viewportHeight - margin * 2))}px`;
+    top = triggerRect.top - Math.min(naturalHeight, availableAbove) - gap;
+  }
+
+  const actualHeight = menu.getBoundingClientRect().height;
+  top = Math.max(margin, Math.min(top, viewportHeight - actualHeight - margin));
+  let left = triggerRect.right - menuWidth;
+  left = Math.max(margin, Math.min(left, viewportWidth - menuWidth - margin));
+
+  menu.style.top = `${Math.round(top)}px`;
+  menu.style.left = `${Math.round(left)}px`;
+  menu.style.visibility = 'visible';
+}
 function renderAssociateDialog(session, evidenceId) {
   if (!evidenceId) return '';
+  const evidence = session?.evidence?.find(item => item.id === evidenceId);
   return `<div class="testing-dialog-backdrop" id="testingAssociateDialog" role="presentation">
     <div class="testing-dialog" role="dialog" aria-modal="true" aria-labelledby="testingAssociateTitle">
-      <div class="testing-dialog-header"><div><h2 id="testingAssociateTitle">Associate evidence</h2><p>Choose the test step this screenshot belongs to.</p></div><button class="iconbtn" id="closeAssociateDialog" type="button" aria-label="Close">${icon('close')}</button></div>
+      <div class="testing-dialog-header"><div><h2 id="testingAssociateTitle">Associate screenshot</h2><p>Select the scenario it belongs to</p></div><button class="iconbtn" id="closeAssociateDialog" type="button" aria-label="Close">${icon('close')}</button></div>
       <div class="testing-dialog-list">
-        ${(session?.testCases || []).map(tc => `<div class="testing-dialog-group"><div class="testing-dialog-group-title">${escapeHtml(tc.title)}</div>${(tc.steps || []).map(step => `<button type="button" class="testing-dialog-step" data-associate-step="${escapeHtml(step.id)}" data-associate-evidence="${escapeHtml(evidenceId)}"><span>${escapeHtml(step.index)}</span><span>${escapeHtml(step.text)}</span></button>`).join('')}</div>`).join('')}
-        ${!session?.testCases?.length ? '<div class="empty-state">No steps available.</div>' : ''}
+        ${(session?.testCases || []).map((tc, index) => `<button type="button" class="testing-dialog-case${evidence?.testCaseId === tc.id ? ' is-current' : ''}" data-associate-case="${escapeHtml(tc.id)}" data-associate-evidence="${escapeHtml(evidenceId)}"><span class="testing-dialog-scenario-number">Scenario ${index + 1}</span><span class="testing-dialog-scenario-title">${escapeHtml(tc.title)}</span>${evidence?.testCaseId === tc.id ? `<span class="testing-dialog-current">Current</span>` : ''}</button>`).join('')}
+        ${!session?.testCases?.length ? '<div class="empty-state">No scenarios available.</div>' : ''}
+        ${evidence?.testCaseId ? `<button type="button" class="testing-dialog-case testing-dialog-unassign" data-associate-case="" data-associate-evidence="${escapeHtml(evidenceId)}"><span class="testing-dialog-scenario-title">Unassign from scenario</span></button>` : ''}
       </div>
     </div>
   </div>`;
@@ -702,62 +987,72 @@ function renderTestingAutofillPicker(recordingOptions) {
 function renderTestingWorkspace() {
   const session = state.testingSession;
   const evidenceOnly = isEvidenceOnlyTesting(session);
-  const unassociated = testingUnassociatedEvidence(session);
+  const unassociated = evidenceOnly ? (session?.evidence || []) : testingUnassociatedEvidence(session);
   const recordingOptions = Object.values(state.recordings).sort((a, b) => recordingTitle(a).localeCompare(recordingTitle(b)));
   const unassocExpanded = state.testingGeneralEvidenceExpanded;
-  const headerTitle = evidenceOnly ? 'Screenshot session' : (session?.workProduct || 'Testing');
-  const headerSubtitle = evidenceOnly ? `${session?.evidence?.length || 0} capture${(session?.evidence?.length || 0) === 1 ? '' : 's'}` : `${session?.testCases?.length || 0} test case${(session?.testCases?.length || 0) === 1 ? '' : 's'}`;
-  const headerActions = evidenceOnly
-    ? ''
-    : `<button class="testing-header-action" id="editTestingCases" type="button">${icon('edit')}<span>Edit cases</span></button>`;
-  return `<section class="testing-page testing-workspace-page${evidenceOnly ? ' testing-evidence-only-page' : ''}">
-    ${renderTestingHeader(headerTitle, headerSubtitle, 'testingBack', headerActions)}
-    <section class="testing-sticky-actions ${evidenceOnly ? 'testing-sticky-actions-evidence-only' : ''}">
-      <div class="testing-action-bar">
-        <button class="primary testing-capture-button" id="captureTestingScreenshot" type="button" ${state.testingCaptureBusy ? 'disabled aria-busy="true"' : ''}>${icon('camera')}<span>${state.testingCaptureBusy ? 'Capturing…' : 'Screenshot'}</span></button>
-        <button class="secondary testing-toolbar-button testing-autofill-launch" id="testingAutofillOpen" type="button" ${state.testingAutofillBusy ? 'disabled aria-busy="true"' : ''}>${icon('bolt')}<span>${state.testingAutofillBusy ? 'Autofilling…' : 'Autofill'}</span></button>
-      </div>
-      </section>
-    ${evidenceOnly ? '' : `<section class="testing-cases-card">
-      <div class="testing-workspace-case-tools"><span>${session?.testCases?.length || 0} test cases</span><div><button class="testing-text-button" type="button" data-testing-expand-all>${icon('chevron')}<span>Expand all</span></button><button class="testing-text-button" type="button" data-testing-collapse-all>${icon('chevron')}<span>Collapse all</span></button></div></div>
+  const sessionName = testingSessionName(session) || 'Untitled testing session';
+  const headerActions = state.testingSessionNameEditing
+    ? `<button class="primary testing-header-action" id="saveTestingSessionNameInline" type="button">${icon('check')}<span>Save</span></button><button class="secondary testing-header-action" id="cancelTestingSessionNameInline" type="button">${icon('close')}<span>Cancel</span></button>`
+    : `<button class="testing-header-action" id="${evidenceOnly ? 'editTestingSessionName' : 'editTestingCases'}" type="button">${icon('edit')}<span>Edit</span></button>`;
+  const headerTitle = state.testingSessionNameEditing
+    ? `<input class="testing-session-name-inline" id="testingSessionNameInline" maxlength="160" aria-label="Session name and export filename" value="${escapeHtml(sessionName === 'Untitled testing session' ? '' : sessionName)}" placeholder="Session name">`
+    : `<h1 title="${escapeHtml(sessionName)}">${escapeHtml(sessionName)}</h1>`;
+
+  const casesMarkup = evidenceOnly ? '' : `<section class="testing-cases-card">
+      <div class="testing-workspace-case-tools"><span>${session?.testCases?.length || 0} scenario${(session?.testCases?.length || 0) === 1 ? '' : 's'}</span></div>
       ${(session?.testCases || []).map((tc, tcIndex) => {
         const collapsed = state.testingCollapsedCases.has(tc.id);
-        return `<section class="testing-case ${collapsed ? 'is-collapsed' : ''}" data-testing-case-id="${escapeHtml(tc.id)}">
-          <button class="testing-case-collapse" type="button" data-toggle-testing-case="${escapeHtml(tc.id)}" aria-expanded="${collapsed ? 'false' : 'true'}" aria-label="${collapsed ? 'Expand' : 'Collapse'} ${escapeHtml(tc.title)}">
-            <span class="testing-case-collapse-icon">${icon('chevron')}</span>
-            <span class="testing-case-heading"><span class="testing-case-kicker">TC_${tcIndex + 1}</span><strong>${escapeHtml(tc.title)}</strong></span>
-            <span class="testing-case-count">${tc.steps.length} step${tc.steps.length === 1 ? '' : 's'}</span>
-          </button>
-          ${collapsed ? '' : `<div class="testing-steps">${(tc.steps || []).map(step => renderTestingStep(session, tc, step)).join('')}</div>`}
+        const caseEvidence = testingCaseEvidence(session, tc.id);
+        const active = state.testingActiveCaseId === tc.id;
+        const statusMenuOpen = state.testingStatusMenuId === tc.id;
+        return `<section class="testing-case ${collapsed ? 'is-collapsed' : ''}${active ? ' is-active-case' : ''}" data-testing-case-id="${escapeHtml(tc.id)}">
+          <div class="testing-case-header-row">
+            <button class="testing-case-collapse" type="button" data-select-testing-case="${escapeHtml(tc.id)}" data-toggle-testing-case="${escapeHtml(tc.id)}" aria-expanded="${collapsed ? 'false' : 'true'}" aria-label="${collapsed ? 'Expand' : 'Collapse'} Scenario ${tcIndex + 1}"><span class="testing-case-collapse-icon">${icon('chevron')}</span></button>
+            <div class="testing-case-header-content" data-activate-testing-case="${escapeHtml(tc.id)}">
+              <div class="testing-case-primary-line"><span class="testing-case-kicker">Scenario ${tcIndex + 1}${active ? ' · Selected' : ''}</span><div class="testing-case-capture-actions testing-case-inline-actions"><button type="button" class="testing-case-icon-action testing-case-inline-action" data-capture-case="${escapeHtml(tc.id)}" title="Capture screenshot (Alt + S) for Scenario ${tcIndex + 1}" aria-label="Capture screenshot for Scenario ${tcIndex + 1}">${icon('camera')}</button><button type="button" class="testing-case-icon-action testing-case-inline-action" data-paste-case="${escapeHtml(tc.id)}" title="Paste an image from clipboard (Ctrl + V) for Scenario ${tcIndex + 1}" aria-label="Paste an image from clipboard for Scenario ${tcIndex + 1}">${icon('contentPaste')}</button></div><div class="testing-status-control"><button class="testing-status-indicator" type="button" data-open-testing-status="${escapeHtml(tc.id)}" aria-haspopup="menu" aria-expanded="${statusMenuOpen ? 'true' : 'false'}" aria-label="Change scenario status. Current status: ${escapeHtml(testingStatusLabel(testingCaseStatus(tc)))}" title="${escapeHtml(testingStatusLabel(testingCaseStatus(tc)))}">${testingStatusDot(testingCaseStatus(tc))}</button>${renderTestingStatusMenu(tc)}</div></div>
+              <strong class="testing-case-title">${escapeHtml(tc.title)}</strong>
+            </div>
+          </div>
+          ${collapsed ? '' : `<div class="testing-case-content">${caseEvidence.length ? `<div class="testing-evidence-grid">${caseEvidence.map(item => renderTestingEvidenceCard(item, session)).join('')}</div>` : ''}</div>`}
         </section>`;
-      }).join('') || '<div class="empty-state">No test cases are available.</div>'}
-    </section>`}
-    <section class="testing-general-evidence ${unassocExpanded ? 'is-expanded' : ''}${evidenceOnly ? ' testing-general-evidence-evidence-only' : ''}">
+      }).join('') || '<div class="empty-state">No scenarios are available.</div>'}
+    </section>`;
+
+  const evidenceMarkup = `<section class="testing-general-evidence ${unassocExpanded ? 'is-expanded' : ''}${evidenceOnly ? ' testing-general-evidence-evidence-only' : ''}">
       <div class="testing-general-evidence-header">
-        <button class="testing-general-evidence-toggle testing-general-evidence-title" type="button" data-toggle-general-evidence aria-expanded="${unassocExpanded ? 'true' : 'false'}">
-          <strong>${evidenceOnly ? 'Evidence' : 'Unassociated evidence'}</strong><small>${unassociated.length ? `${unassociated.length} capture${unassociated.length === 1 ? '' : 's'}` : 'No captures'}</small>
-        </button>
-        <button class="testing-paste-screenshot" id="testingPasteScreenshot" type="button" title="Paste an image from the clipboard" aria-label="Paste screenshot"><span>Paste Screenshot</span></button>
-        <button class="testing-general-evidence-toggle testing-general-evidence-icon-toggle" type="button" data-toggle-general-evidence aria-expanded="${unassocExpanded ? 'true' : 'false'}" title="${unassocExpanded ? 'Collapse evidence' : 'Expand evidence'}" aria-label="${unassocExpanded ? 'Collapse evidence' : 'Expand evidence'}">
-          <span class="testing-section-toggle-icon">${icon('chevron')}</span>
-        </button>
+        <button class="testing-general-evidence-toggle testing-general-evidence-title" type="button" data-toggle-general-evidence aria-expanded="${unassocExpanded ? 'true' : 'false'}"><strong>${evidenceOnly ? 'Evidence' : 'Unassigned screenshots'}</strong><small>${unassociated.length ? `${unassociated.length} screenshot${unassociated.length === 1 ? '' : 's'}` : (evidenceOnly ? 'No screenshots yet' : 'None')}</small></button>
+        <button class="testing-paste-screenshot" id="testingPasteScreenshot" type="button" title="Paste an image from clipboard (Ctrl + V)" aria-label="Paste an image from clipboard (Ctrl + V)">${icon('contentPaste')}</button>
+        <button class="testing-general-evidence-toggle testing-general-evidence-icon-toggle" type="button" data-toggle-general-evidence aria-expanded="${unassocExpanded ? 'true' : 'false'}" title="${unassocExpanded ? 'Collapse evidence' : 'Expand evidence'}" aria-label="${unassocExpanded ? 'Collapse evidence' : 'Expand evidence'}"><span class="testing-section-toggle-icon">${icon('chevron')}</span></button>
       </div>
-      ${unassocExpanded ? `<div class="testing-general-evidence-body">${unassociated.length ? `<div class="testing-evidence-grid">${unassociated.map(item => renderTestingEvidenceCard(item, session)).join('')}</div>` : `<div class="testing-empty-evidence">${evidenceOnly ? 'Captured screenshots will appear here.' : 'Captures taken before selecting a step can be linked later.'}</div>`}</div>` : ''}
-    </section>
-    <button class="primary testing-finish" data-finish-testing type="button">Finish Testing</button>
+      ${unassocExpanded ? `<div class="testing-general-evidence-body">${unassociated.length ? `<div class="testing-evidence-grid">${unassociated.map(item => renderTestingEvidenceCard(item, session)).join('')}</div>` : `<div class="testing-empty-evidence">${evidenceOnly ? 'Captured screenshots will appear here.' : 'New screenshots attach to the selected scenario.'}</div>`}</div>` : ''}
+    </section>`;
+
+  return `<section class="testing-page testing-workspace-page${evidenceOnly ? ' testing-evidence-only-page' : ''}">
+    <div class="testing-topbar fp-route-header">
+      <div class="testing-heading-wrap">${backButton('Back', 'testingBack')}<div class="testing-heading"><div class="eyebrow">Testing</div>${headerTitle}</div></div>
+      <div class="testing-header-actions${state.testingSessionNameEditing ? ' is-editing' : ''}">${headerActions}</div>
+    </div>
+    <section class="testing-sticky-actions ${evidenceOnly ? 'testing-sticky-actions-evidence-only' : ''}"><div class="testing-action-bar">
+      <button class="primary testing-capture-button" id="captureTestingScreenshot" type="button" title="Capture screenshot (Alt + S)" aria-label="Capture screenshot (Alt + S)" ${state.testingCaptureBusy ? 'disabled aria-busy="true"' : ''}>${icon('camera')}<span>${state.testingCaptureBusy ? 'Capturing…' : 'Screenshot'}</span></button>
+      <button class="secondary testing-toolbar-button testing-autofill-launch" id="testingAutofillOpen" type="button" ${state.testingAutofillBusy ? 'disabled aria-busy="true"' : ''}>${icon('bolt')}<span>${state.testingAutofillBusy ? 'Autofilling…' : 'Autofill'}</span></button>
+    </div></section>
+    ${renderTestingSessionToolbar()}
+    ${evidenceOnly ? '' : '<div class="testing-workspace-scroll">'}
+    ${casesMarkup}
+    ${evidenceMarkup}
+    ${evidenceOnly ? '' : '</div>'}
+    <button class="primary testing-finish" data-finish-testing type="button">Finish testing</button>
     ${evidenceOnly ? '' : renderAssociateDialog(session, state.testingAssociatingEvidenceId)}
     ${state.testingAutofillPickerOpen ? renderTestingAutofillPicker(recordingOptions) : ''}
   </section>`;
 }
-
 function renderTestingSummary() {
   const session = state.testingSession;
   const evidenceOnly = isEvidenceOnlyTesting(session);
   const countEvidence = session?.evidence?.length || 0;
-  const countSteps = (session?.testCases || []).reduce((sum, tc) => sum + (tc.steps?.length || 0), 0);
   const stats = evidenceOnly
-    ? `<div><strong>${countEvidence}</strong><span>Captures</span></div>`
-    : `<div><strong>${session?.testCases?.length || 0}</strong><span>Test cases</span></div><div><strong>${countSteps}</strong><span>Steps</span></div><div><strong>${countEvidence}</strong><span>Evidence</span></div>`;
+    ? `<div><strong>${countEvidence}</strong><span>${countEvidence === 1 ? 'Screenshot' : 'Screenshots'}</span></div>`
+    : `<div><strong>${session?.testCases?.length || 0}</strong><span>Scenarios</span></div><div><strong>${countEvidence}</strong><span>${countEvidence === 1 ? 'Screenshot' : 'Screenshots'}</span></div>`;
   const anyExportBusy = state.testingExportBusy || state.testingZipBusy;
   const exportDisabled = anyExportBusy || countEvidence === 0;
   const wordStatus = state.testingExportBusy
@@ -770,17 +1065,15 @@ function renderTestingSummary() {
     : state.testingZipCompleted
         ? `<div class="testing-export-item-status success" role="status"><span>${escapeHtml(state.testingZipFilename)}</span></div>`
         : '';
-  const wordLabel = state.testingExportBusy ? 'Exporting…' : state.testingExportCompleted ? 'Download Word again' : 'Export Word Document';
-  const zipLabel = state.testingZipBusy ? 'Exporting…' : state.testingZipCompleted ? 'Download Screenshots ZIP again' : 'Export Screenshots ZIP';
+  const wordLabel = state.testingExportBusy ? 'Exporting…' : state.testingExportCompleted ? 'Download Word document again' : 'Export Word document';
+  const zipLabel = state.testingZipBusy ? 'Exporting…' : state.testingZipCompleted ? 'Download screenshots ZIP again' : 'Export screenshots ZIP';
   return `<section class="testing-page testing-summary-page">
-    ${renderTestingHeader('Testing complete', evidenceOnly ? 'Evidence session finished' : (session?.workProduct || ''))}
+    ${renderTestingHeader('Testing complete', testingSessionName(session), 'backToTestingSummary')}
     <div class="testing-summary-body">
     <section class="testing-summary-card">
       <div class="testing-summary-icon">${icon('check')}</div>
-      <h2>Testing complete</h2>
-      <p>Your evidence is ready to export.</p>
+      <p class="testing-summary-ready">Your evidence is ready to export.</p>
       <div class="testing-summary-stats${evidenceOnly ? ' is-single' : ''}">${stats}</div>
-      ${evidenceOnly ? `<div class="testing-export-name"><span>File name</span><strong>${escapeHtml(session?.workProduct || '—')}</strong></div>` : ''}
       <section class="testing-export-section">
         <div class="testing-export-section-title">Export</div>
         <div class="testing-export-actions">
@@ -800,8 +1093,457 @@ function renderTestingSummary() {
     </div>
   </section>`;
 }
-function renderLiveRecordingRows(steps) {
-  return (steps || []).map((s, i) => `<div class="field-row recording-live-row"><span class="step-number">${i + 1}</span><span class="field-main"><span class="field-name">${escapeHtml(s.target.label)}</span><span class="field-detail"><span class="field-value">${escapeHtml(fmtStepValue(s))}</span><span class="field-type">${escapeHtml(fieldTypeLabel(s))}</span></span></span><button class="live-remove-field" type="button" data-remove-live-step="${i}" title="Remove field from recording" aria-label="Remove ${escapeHtml(s.target.label)} from recording"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3h6l1 2h3v2H3V5h3l1-2Zm-2 5h10l-.7 9H5.7L5 8Zm3 2v5h1v-5H8Zm3 0v5h1v-5h-1Z"/></svg></button></div>`).join('') || '<div class="empty-state"><strong>Nothing recorded yet</strong></div>';
+function randomizerCore() { return window.ForcePilotRandomizer || null; }
+function getRandomizationDefaults(step, strategy) {
+  const core = randomizerCore();
+  return core?.defaults ? core.defaults(step, strategy) : { version: 1, enabled: false, strategy: strategy || 'text', options: {} };
+}
+function randomizationView(context = 'edit') { return String(context).startsWith('live') ? 'live' : 'edit'; }
+function randomizationEditorToken(context, key) { return `${randomizationView(context)}|${context}|${String(key)}`; }
+function collapseRandomizationGroup(view = 'live') {
+  const set = state.expandedRandomizationEditors instanceof Set ? state.expandedRandomizationEditors : (state.expandedRandomizationEditors = new Set());
+  for (const token of [...set]) if (token.startsWith(`${view}|`)) set.delete(token);
+  document.querySelectorAll('[data-randomization-editor]').forEach(editor => {
+    if (randomizationView(editor.dataset.randContext || 'edit') === view && editor.classList.contains('is-enabled')) editor.classList.add('is-collapsed');
+  });
+}
+function setRandomizationExpanded(context, key, expanded) {
+  const view = randomizationView(context);
+  const set = state.expandedRandomizationEditors instanceof Set ? state.expandedRandomizationEditors : (state.expandedRandomizationEditors = new Set());
+  const token = randomizationEditorToken(context, key);
+  if (expanded) {
+    // Randomization editors act as a compact accordion: only one expanded panel per
+    // view, even when a live recording refresh rebuilds the row DOM.
+    for (const existing of [...set]) if (existing.startsWith(`${view}|`)) set.delete(existing);
+    set.add(token);
+  } else set.delete(token);
+  document.querySelectorAll('[data-randomization-editor]').forEach(editor => {
+    if (randomizationView(editor.dataset.randContext || 'edit') !== view || !editor.classList.contains('is-enabled')) return;
+    editor.classList.toggle('is-collapsed', !set.has(randomizationEditorToken(editor.dataset.randContext || 'edit', editor.dataset.randKey || '')));
+  });
+}
+function randomizationOptionValue(step, cfg) {
+  const core = randomizerCore();
+  if (!core?.generate) return 'Example generated on Autofill';
+  if (String(cfg?.strategy || '') === 'dependentPicklist') {
+    const target = step?.target || {};
+    const isDependent = !!(target.isDependentPicklist || target.controllerName || (Array.isArray(target.controllingFields) && target.controllingFields.length) || (target.controllerValues && Object.keys(target.controllerValues).length));
+    if (isDependent) return 'Options for the current controlling value';
+    if (!(core?.validOptions?.(step) || []).length) return 'Available options will be read from Salesforce';
+  }
+  // Keep the existing Example preview unchanged when the saved recording has no
+  // option catalogue; runtime Autofill now resolves the real Salesforce choices.
+  if (['picklist','multiPicklist'].includes(String(cfg?.strategy||'')) && !(core?.validOptions?.(step)||[]).length) return 'No valid Salesforce options are available. Refresh field metadata or allow at least one option.';
+  const sample = core.generate(step, { ...(cfg || {}), enabled: true }, { usedValues: new Set() });
+  if (!sample?.ok) return sample?.error || 'Configure valid settings to preview.';
+  if (sample.lookup) return sample.searchTerm ? `Random Salesforce result matching “${sample.searchTerm}”` : 'A random lookup record';
+  if (sample.preserveCreateWorkflow) return 'Use the captured Create New workflow';
+  if (Array.isArray(sample.value)) return sample.value.join('; ');
+  if (sample.value && typeof sample.value === 'object') return Object.values(sample.value).filter(Boolean).join(' · ') || 'Sample address';
+  return String(sample.value ?? '');
+}
+function randomizationStrategies(step, cfg) {
+  const core = randomizerCore();
+  const list = core?.strategies ? core.strategies(step) : [{ value: cfg.strategy || 'text', label: 'Random text' }];
+  if (cfg?.strategy && !list.some(x => x.value === cfg.strategy)) return [{ value: cfg.strategy, label: 'Current configuration' }, ...list];
+  return list;
+}
+function renderRandomizationEditor(step, key, { context = 'edit' } = {}) {
+  const core = randomizerCore();
+  let cfg = step?.randomization && typeof step.randomization === 'object' ? clone(step.randomization) : getRandomizationDefaults(step);
+  if (!cfg.options || typeof cfg.options !== 'object') cfg.options = {};
+  // Migrate the intermediate v2.2.27/28 Today-relative Date Range controls back
+  // to the absolute From/To date pickers used in v2.2.26. Do not mutate the
+  // stored recording until the user saves the randomization config.
+  const today=localDateISO();
+  if(cfg.strategy==='dateRange'&&(cfg.options.fromDays!==undefined||cfg.options.toDays!==undefined)){const from=Number(cfg.options.fromDays??-30),to=Number(cfg.options.toDays??30);cfg.options.startDate=shiftDateFrom(today,from);cfg.options.endDate=shiftDateFrom(today,to);delete cfg.options.fromDays;delete cfg.options.toDays;delete cfg.options.direction;delete cfg.options.weekdaysOnly;}
+  if(cfg.strategy==='dateTimeRange'&&cfg.options.fromDays===undefined&&cfg.options.toDays===undefined&&cfg.options.startDateTime&&cfg.options.endDateTime){const from=dateOffsetDays(today,String(cfg.options.startDateTime).slice(0,10)),to=dateOffsetDays(today,String(cfg.options.endDateTime).slice(0,10));if(from!==null&&to!==null){cfg.options.fromDays=from;cfg.options.toDays=to;cfg.options.startTime=String(cfg.options.startDateTime).slice(11,16)||'09:00';cfg.options.endTime=String(cfg.options.endDateTime).slice(11,16)||'17:00';cfg.options.stepMinutes=Number(cfg.options.stepMinutes)||15;cfg.options.direction=cfg.options.direction||'any';cfg.options.weekdaysOnly=!!cfg.options.weekdaysOnly;delete cfg.options.startDateTime;delete cfg.options.endDateTime;}}
+  const type = core?.fieldType ? core.fieldType(step) : 'text';
+  const strategyList = randomizationStrategies(step, cfg);
+  const option = (name, fallback='') => cfg.options?.[name] ?? fallback;
+  const attrKey = `data-rand-key="${escapeHtml(String(key))}" data-rand-context="${context}"`;
+  const input = (name, label, value, typeName='number', extra='') => `<label class="fp-random-field"><span>${label}</span><input class="edit-control fp-random-input" type="${typeName}" ${attrKey} data-rand-option="${name}" value="${escapeHtml(value ?? '')}" ${extra || (typeName==='number'?'step="any"':'')}></label>`;
+  const select = (name, label, value, options) => `<label class="fp-random-field"><span>${label}</span><select class="edit-control fp-random-input" ${attrKey} data-rand-option="${name}">${options.map(o=>`<option value="${escapeHtml(o.value)}" ${String(value ?? '')===String(o.value)?'selected':''}>${escapeHtml(o.label)}</option>`).join('')}</select></label>`;
+  const check = (name, label, value) => `<label class="fp-random-check"><input type="checkbox" ${attrKey} data-rand-option="${name}" ${value?'checked':''}><span>${label}</span></label>`;
+  let fields = '';
+  if (['numberRange','numberRangeIncrement','currencyRange','percentRange'].includes(cfg.strategy)) {
+    const isNumber = cfg.strategy === 'numberRange' || cfg.strategy === 'numberRangeIncrement';
+    const hasIncrement = !isNumber || cfg.strategy === 'numberRangeIncrement';
+    const labels = cfg.strategy === 'currencyRange' ? ['Min','Max','Increment'] : cfg.strategy === 'percentRange' ? ['Min (%)','Max (%)','Increment'] : ['Min','Max','Increment'];
+    fields = `<div class="fp-random-grid fp-random-grid-numeric fp-random-grid-numeric-${hasIncrement?'4':'3'}">${input('min',labels[0],option('min',1))}${input('max',labels[1],option('max',100))}${hasIncrement?input('step',labels[2],option('step',1)):''}${input('decimals','Decimals',option('decimals',0),'number','min="0" max="10" step="1"')}</div>`;
+    if(cfg.strategy==='percentRange')fields+='<p class="fp-random-help">Enter percentage points: 25 means 25%.</p>';
+    else if(cfg.strategy==='currencyRange')fields+='<p class="fp-random-help">Enter amounts without currency symbols.</p>';
+  } else if (cfg.strategy === 'relativeDate') { const d=getRandomizationDefaults(step,'relativeDate').options; fields=`<div class="fp-random-relative-date-row"><span class="fp-random-fixed">Today</span><select class="edit-control fp-random-input" ${attrKey} data-rand-option="sign" aria-label="Date direction"><option value="+" ${String(option('sign',d.sign))==='+'?'selected':''}>+</option><option value="-" ${String(option('sign',d.sign))==='-'?'selected':''}>−</option></select><input class="edit-control fp-random-input" type="number" ${attrKey} data-rand-option="days" value="${escapeHtml(option('days',d.days))}" min="0" max="36500" step="1" aria-label="Days"><span class="fp-random-relative-days">days</span></div><p class="fp-random-help">Days before or after the current date.</p>`;
+  } else if (cfg.strategy === 'dateRange') {
+    const d = getRandomizationDefaults(step,'dateRange').options;
+    fields = `<div class="fp-random-grid fp-random-grid-date">${input('startDate','From',option('startDate',d.startDate),'date')}${input('endDate','To',option('endDate',d.endDate),'date')}</div>`;
+  } else if (cfg.strategy === 'dateTimeRange') {
+    const d = getRandomizationDefaults(step,'dateTimeRange').options;
+    fields = `<p class="fp-random-help">Experimental: combined date/time inputs only. Split Lightning controls are not verified.</p><div class="fp-random-grid fp-random-grid-date">${input('fromDays','From days',option('fromDays',d.fromDays),'number','min="-36500" max="36500" step="1"')}${input('toDays','To days',option('toDays',d.toDays),'number','min="-36500" max="36500" step="1"')}${select('direction','Preset',option('direction','any'),[{value:'any',label:'Any'},{value:'past',label:'Past only'},{value:'future',label:'Future only'}])}${input('startTime','From time',option('startTime',d.startTime),'time')}${input('endTime','To time',option('endTime',d.endTime),'time')}${input('stepMinutes','Minute step',option('stepMinutes',15),'number','min="1" max="1440" step="1"')}${check('weekdaysOnly','Weekdays only',option('weekdaysOnly',false))}</div>`;
+  } else if (cfg.strategy === 'timeRange') {
+    fields = `<div class="fp-random-grid">${input('startTime','Start time',option('startTime','09:00'),'time')}${input('endTime','End time',option('endTime','17:00'),'time')}${input('stepMinutes','Minute increment',option('stepMinutes',15),'number','min="1" max="1440" step="1"')}</div>`;
+  } else if (cfg.strategy === 'textPrefixUnique') {
+    const d = getRandomizationDefaults(step,'textPrefixUnique').options;
+    const limit = Number(step?.target?.length || step?.target?.maxLength || 255);
+    fields = input('prefix','Custom Text',option('prefix',d.prefix),'text',`maxlength="${Math.max(1,limit)}"`);
+  } else if (cfg.strategy === 'text' || cfg.strategy === 'paragraph') {
+    const d = getRandomizationDefaults(step,cfg.strategy).options;
+    fields = `<div class="fp-random-grid fp-random-grid-small-inputs">${input('minLength','Minimum length',option('minLength',d.minLength),'number','min="1" step="1"')}${input('maxLength','Maximum length',option('maxLength',d.maxLength),'number','min="1" step="1"')}</div>`;
+  } else if (cfg.strategy === 'email' || cfg.strategy === 'url') {
+    fields = input('domain',cfg.strategy === 'email' ? 'Email domain' : 'URL domain',option('domain','example.com'),'text','maxlength="253"');
+  } else if (cfg.strategy === 'phone') {
+    fields = select('country','Number format',option('country','US'),[{value:'US',label:'United States (555 test range)'},{value:'UK',label:'United Kingdom (test format)'},{value:'IN',label:'India (format only)'},{value:'Generic',label:'International format'}]);
+  } else if (cfg.strategy === 'boolean') {
+    fields = '';
+  } else if (cfg.strategy === 'multiPicklist') {
+    fields = `<div class="fp-random-grid fp-random-grid-small-inputs">${input('minSelections','Minimum selected',option('minSelections',1),'number','min="1" step="1"')}${input('maxSelections','Maximum selected',option('maxSelections',3),'number','min="1" step="1"')}</div>`;
+  } else if (cfg.strategy === 'lookupRandom') {
+    fields = input('searchTerm','Optional search text',option('searchTerm',''),'text','maxlength="100"');
+  } else if (cfg.strategy === 'lookupCreate') {
+    fields = '<p class="fp-random-help">Uses the captured Create New workflow. Configure the new-record fields below.</p>';
+  } else if (cfg.strategy === 'address') {
+    fields = select('country','Sample address country',option('country','US'),[{value:'US',label:'United States'},{value:'UK',label:'United Kingdom'},{value:'IN',label:'India'}]);
+  } else if (cfg.strategy === 'picklist') {
+    fields = '<p class="fp-random-help">Selects from available recorded options. Do not use for dependent picklists.</p>';
+  } else if (cfg.strategy === 'dependentPicklist') {
+    fields = '<p class="fp-random-help">Selects any random available option</p>';
+  }
+  if (['picklist','multiPicklist'].includes(cfg.strategy)) {
+    const opts = core?.validOptions ? core.validOptions(step) : typeOptions(step).map(o=>({value:o.value,label:o.displayValue||o.value}));
+    if (opts.length) {
+      const allowed = Array.isArray(cfg.options.allowedValues) ? new Set(cfg.options.allowedValues.map(x=>String(x).toLowerCase())) : null;
+      fields += `<details class="fp-random-allowed-options"><summary>Limit to specific options <span>(optional)</span></summary><div>${opts.map(o=>{const v=o.label||o.value;const checked=!allowed||allowed.has(String(v).toLowerCase())||allowed.has(String(o.value).toLowerCase());return `<label><input type="checkbox" ${attrKey} data-rand-allowed data-rand-value="${escapeHtml(v)}" ${checked?'checked':''}><span>${escapeHtml(v)}</span></label>`}).join('')}</div></details>`;
+    }
+  }
+  const supportsUnique = ['text','paragraph','company','currencyRange','percentRange','email','url'].includes(cfg.strategy);
+  const unique = cfg.options.unique === true || (cfg.strategy === 'email');
+  const sample = randomizationOptionValue(step,cfg);
+  const status = cfg.enabled ? 'true' : 'false';
+  const expanded = state.expandedRandomizationEditors instanceof Set && state.expandedRandomizationEditors.has(randomizationEditorToken(context,key));
+  return `<section class="fp-randomization-editor ${cfg.enabled?'is-enabled':''} ${cfg.enabled&&!expanded?'is-collapsed':''}" data-randomization-editor ${attrKey}><div class="fp-randomization-heading"><strong class="fp-randomization-heading-title" data-rand-heading tabindex="0" role="button" aria-label="Collapse or expand randomization settings">Randomize value</strong><label class="fp-random-switch" title="Randomize value"><input type="checkbox" role="switch" aria-label="Randomize ${escapeHtml(step?.target?.label||'field')}" aria-checked="${status}" ${attrKey} data-rand-enabled ${cfg.enabled?'checked':''}><span class="fp-random-switch-track"><span></span></span></label></div>${cfg.enabled?`<div class="fp-randomization-body"><label class="fp-random-field fp-random-strategy"><span>Generate</span><select class="edit-control fp-random-input" ${attrKey} data-rand-strategy>${strategyList.map(x=>`<option value="${escapeHtml(x.value)}" ${cfg.strategy===x.value?'selected':''}>${escapeHtml(x.label)}</option>`).join('')}</select></label><div class="fp-random-options">${fields}</div>${supportsUnique?`<label class="fp-random-unique"><input type="checkbox" ${attrKey} data-rand-option="unique" ${unique?'checked':''}><span>Generate a unique value</span></label>`:''}${cfg.enabled&&cfg.strategy==='lookupRandom'?'<p class="fp-random-warning" role="note">May select a real Salesforce record.</p>':''}<div class="fp-random-preview"><div><span class="fp-random-preview-label">Example</span><output data-rand-preview-value ${attrKey}>${escapeHtml(sample)}</output></div><button type="button" class="fp-random-preview-button" ${attrKey} data-rand-preview><span>Preview</span></button></div></div>`:''}</section>`;
+}
+function readRandomizationFromDOM(step, key, { context = 'edit' } = {}) {
+  const root = [...document.querySelectorAll('[data-randomization-editor]')].find(el => el.dataset.randKey === String(key) && el.dataset.randContext === context);
+  if (!root) return step?.randomization ? clone(step.randomization) : getRandomizationDefaults(step);
+  const enabled = !!root.querySelector('[data-rand-enabled]')?.checked;
+  const strategyControl = root.querySelector('[data-rand-strategy]');
+  const strategy = strategyControl?.value || step?.randomization?.strategy || randomizerCore()?.guessStrategy?.(step) || 'text';
+  const previous = step?.randomization && step.randomization.strategy === strategy ? clone(step.randomization) : getRandomizationDefaults(step,strategy);
+  const cfg = { version: 1, enabled, strategy, options: { ...(previous.options || {}) } };
+  root.querySelectorAll('[data-rand-option]').forEach(el => {
+    const name = el.dataset.randOption;
+    if (!name) return;
+    if (el.type === 'checkbox') cfg.options[name] = el.checked;
+    else if (el.type === 'number') cfg.options[name] = el.value.trim() === '' ? '' : Number(el.value);
+    else cfg.options[name] = el.value;
+  });
+  if (strategy === 'dateRange' && cfg.options.startDate && cfg.options.endDate) {
+    delete cfg.options.fromDays; delete cfg.options.toDays; delete cfg.options.direction; delete cfg.options.weekdaysOnly;
+  }
+  if (strategy === 'boolean') cfg.options.mode = 'random';
+  const allowed = [...root.querySelectorAll('[data-rand-allowed]:checked')].map(el=>el.dataset.randValue).filter(Boolean);
+  if (root.querySelector('[data-rand-allowed]')) cfg.options.allowedValues = allowed;
+  return cfg;
+}
+function resolveDraftStep(key) {
+  const raw = String(key);
+  const workflow = raw.match(/^wf-(\d+)-(\d+)$/);
+  if (workflow) return lookupCreateWorkflow(state.draft?.steps?.[Number(workflow[1])])?.fields?.[Number(workflow[2])] || null;
+  const index = Number(raw);
+  return Number.isInteger(index) ? state.draft?.steps?.[index] || null : null;
+}
+function resolveLiveStep(key, context='live') {
+  const raw=String(key);
+  if(context==='live') return state.activeSteps?.[Number(raw)] || null;
+  const workflow=raw.match(/^wf-(\d+)-(\d+)$/);
+  if(context==='live-child' && workflow) return lookupCreateWorkflow(state.activeSteps?.[Number(workflow[1])])?.fields?.[Number(workflow[2])] || null;
+  return null;
+}
+function replaceRandomizationEditor(step, key, context) {
+  const old = [...document.querySelectorAll('[data-randomization-editor]')].find(el=>el.dataset.randKey===String(key)&&el.dataset.randContext===context);
+  if (!old) return;
+  const template = document.createElement('template');
+  template.innerHTML = renderRandomizationEditor(step,String(key),{context}).trim();
+  old.replaceWith(template.content.firstElementChild);
+}
+function setRandomizationError(root, message) {
+  if (!root) return;
+  let error = root.querySelector('.fp-random-error');
+  if (!message) { error?.remove(); root.querySelectorAll('.fp-random-input').forEach(el=>el.removeAttribute('aria-invalid')); return; }
+  if (!error) { error=document.createElement('p'); error.className='fp-random-error'; error.setAttribute('role','alert'); const body=root.querySelector('.fp-randomization-body'); if(body)body.append(error); else root.append(error); }
+  error.textContent = message;
+  root.querySelectorAll('.fp-random-input').forEach(el=>el.setAttribute('aria-invalid','true'));
+}
+function bindRandomizationDelegation() {
+  if (app.dataset.fpRandomizationBound === 'true') return;
+  app.dataset.fpRandomizationBound = 'true';
+  app.addEventListener('click', async event => {
+    const heading = event.target.closest('[data-rand-heading]');
+    if (heading && !event.target.closest('.fp-random-switch')) {
+      const editor = heading.closest('[data-randomization-editor]');
+      if (editor?.classList.contains('is-enabled')) {
+        const collapsed = editor.classList.contains('is-collapsed');
+        setRandomizationExpanded(editor.dataset.randContext || 'edit', editor.dataset.randKey || '', collapsed);
+      }
+      event.preventDefault();
+      return;
+    }
+    const preview = event.target.closest('[data-rand-preview]');
+    if (preview) {
+      event.preventDefault(); event.stopPropagation();
+      const context=preview.dataset.randContext, key=preview.dataset.randKey;
+      const step=context.startsWith('live')?resolveLiveStep(key,context):resolveDraftStep(key);
+      const cfg=readRandomizationFromDOM(step,key,{context});
+      const output=[...document.querySelectorAll('[data-rand-preview-value]')].find(el=>el.dataset.randKey===String(key)&&el.dataset.randContext===context);
+      if(output) {
+        if(['numberRangeIncrement','currencyRange','percentRange'].includes(cfg.strategy)){
+          const min=Number(cfg.options?.min),max=Number(cfg.options?.max),decimals=Math.max(0,Math.min(10,Number(cfg.options?.decimals)||0));
+          let increment=Number(cfg.options?.step);if(cfg.strategy==='percentRange'){const scaleRaw=step?.target?.scale,targetScale=scaleRaw!==undefined&&scaleRaw!==null&&String(scaleRaw)!==''&&Number.isInteger(Number(scaleRaw))?Math.max(0,Math.min(10,Number(scaleRaw))):null,defaultStep=targetScale===null?1:1/Math.pow(10,targetScale),autoStep=targetScale===null?decimals>0:decimals!==targetScale;if(autoStep&&Math.abs(increment-defaultStep)<1e-12)increment=1/Math.pow(10,decimals);}
+          const current=Number(String(output.textContent||'').replace(/[^0-9eE+.-]/g,''));
+          let next=Number.isFinite(current)&&current>=min&&current<=max?current+increment:min;
+          if(!Number.isFinite(next)||next>max+1e-9)next=min;
+          if(Math.abs(next)<1e-9){next=min>0?min:increment;if(next>max)next=min;}
+          output.textContent=Number(next.toFixed(decimals)).toString();
+        } else output.textContent=randomizationOptionValue(step,cfg);
+      }
+      return;
+    }
+    const remove = event.target.closest('[data-remove-live-step]');
+    if(remove){ event.preventDefault();event.stopPropagation();await removeLiveRecordingStep(Number(remove.dataset.removeLiveStep)); }
+  });
+  app.addEventListener('keydown', event => {
+    const heading = event.target.closest('[data-rand-heading]');
+    if (!heading || !['Enter',' '].includes(event.key)) return;
+    const editor = heading.closest('[data-randomization-editor]');
+    if (!editor?.classList.contains('is-enabled')) return;
+    event.preventDefault();
+    const collapsed = editor.classList.contains('is-collapsed');
+    setRandomizationExpanded(editor.dataset.randContext || 'edit', editor.dataset.randKey || '', collapsed);
+  });
+  app.addEventListener('change', async event => {
+    const control=event.target.closest('[data-rand-enabled],[data-rand-strategy],[data-rand-option],[data-rand-allowed]');
+    if(!control)return;
+    const context=control.dataset.randContext||'edit', key=control.dataset.randKey;
+    const step=context.startsWith('live')?resolveLiveStep(key,context):resolveDraftStep(key);
+    if(!step)return;
+    if(control.dataset.randOption==='step') control.dataset.fpStepTouched='true';
+    if(control.dataset.randOption==='decimals' && (step.randomization?.strategy||control.closest('[data-randomization-editor]')?.querySelector('[data-rand-strategy]')?.value)==='percentRange'){
+      const increment=control.closest('[data-randomization-editor]')?.querySelector('[data-rand-option="step"]');
+      const defaultStep=Number(getRandomizationDefaults(step,'percentRange').options.step);
+      if(increment && increment.dataset.fpStepTouched!=='true' && Number.isFinite(defaultStep) && Math.abs(Number(increment.value)-defaultStep)<1e-12 && Number(control.value)>=0) increment.value=String(1/Math.pow(10,Math.min(10,Number(control.value))));
+    }
+    const oldConfig=step.randomization?clone(step.randomization):null;
+    let cfg=readRandomizationFromDOM(step,key,{context});
+    if(control.matches('[data-rand-strategy]')){
+      const enabled=!!document.querySelector(`[data-randomization-editor][data-rand-key="${CSS.escape(String(key))}"][data-rand-context="${context}"] [data-rand-enabled]`)?.checked;
+      cfg=getRandomizationDefaults(step,control.value);cfg.enabled=enabled;
+      if(oldConfig?.options?.unique && cfg.options)cfg.options.unique=true;
+      step.randomization=cfg;
+      replaceRandomizationEditor(step,key,context);
+      cfg=readRandomizationFromDOM(step,key,{context});
+    }
+    if(control.matches('[data-rand-enabled]') && cfg.enabled){
+      if(cfg.strategy==='lookupCreate'){
+        control.checked=false;
+        setRandomizationError(control.closest('[data-randomization-editor]'),'This lookup already uses its captured Create New workflow. Randomize the new-record fields below, or choose “Random existing record”.');
+        return;
+      }
+      const core=randomizerCore();const verdict=core?.validate?.(step,cfg)||{ok:true};
+      if(!verdict.ok){
+        control.checked=false;
+        setRandomizationError(control.closest('[data-randomization-editor]'),verdict.error);
+        return;
+      }
+      step.randomization=cfg;
+      setRandomizationExpanded(context,key,true);
+      replaceRandomizationEditor(step,key,context);
+      cfg=readRandomizationFromDOM(step,key,{context});
+    } else if(control.matches('[data-rand-enabled]') && !cfg.enabled) {
+      step.randomization=cfg;
+      setRandomizationExpanded(context,key,false);
+      replaceRandomizationEditor(step,key,context);
+      cfg=readRandomizationFromDOM(step,key,{context});
+    }
+    if(context==='edit'){
+      const verdict=cfg.enabled?(randomizerCore()?.validate?.(step,cfg)||{ok:true}):{ok:true};
+      setRandomizationError([...document.querySelectorAll('[data-randomization-editor]')].find(el=>el.dataset.randKey===String(key)&&el.dataset.randContext===context),verdict.ok?'':verdict.error);
+      const output=[...document.querySelectorAll('[data-rand-preview-value]')].find(el=>el.dataset.randKey===String(key)&&el.dataset.randContext===context);if(output)output.textContent=randomizationOptionValue(step,cfg);
+      step.randomization=cfg;
+      return;
+    }
+    const editor=[...document.querySelectorAll('[data-randomization-editor]')].find(el=>el.dataset.randKey===String(key)&&el.dataset.randContext===context);
+    const verdict=cfg.enabled?(randomizerCore()?.validate?.(step,cfg)||{ok:true}):{ok:true};
+    if(!verdict.ok){setRandomizationError(editor,verdict.error);return;}
+    setRandomizationError(editor,'');
+    const success=await persistLiveRandomization(key,cfg,oldConfig,context);
+    if(!success){ if(oldConfig)step.randomization=oldConfig; else delete step.randomization; }
+    else step.randomization=clone(cfg);
+    const list=document.getElementById('recording-field-list');
+    if(list) {
+      list.dataset.fpRenderSignature=liveStepsRenderSignature(state.activeSteps);
+      const liveIndex=context==='live'?Number(key):Number(String(key).match(/^wf-(\d+)-/)?.[1]);
+      if(context==='live'&&Number.isInteger(liveIndex)) {
+        const row=list.querySelector(`.recording-live-row[data-live-row-index="${liveIndex}"]`);
+        const display=row?.querySelector('.field-value');
+        if(display)display.innerHTML=renderStepValue(step);
+      }
+    }
+  });
+}
+async function persistLiveRandomization(key, config, previousConfig, context='live') {
+  const raw=String(key);let index=Number(raw),step=null,parent=null,childIndex=null;
+  if(context==='live-child'){
+    const match=raw.match(/^wf-(\d+)-(\d+)$/);if(!match)return false;
+    index=Number(match[1]);childIndex=Number(match[2]);parent=state.activeSteps?.[index];step=lookupCreateWorkflow(parent)?.fields?.[childIndex]||null;
+  }else step=state.activeSteps?.[index];
+  if(!step)return false;
+  if((step.__fpExistingAppendStep || parent?.__fpExistingAppendStep) && state.addingToRecordingId){
+    const recording=state.recordings[state.addingToRecordingId];const at=Number(parent?.__fpExistingIndex ?? step.__fpExistingIndex);
+    const stored=childIndex===null?recording?.steps?.[at]:lookupCreateWorkflow(recording?.steps?.[at])?.fields?.[childIndex];
+    if(!stored)return false;
+    const old=clone(stored);if(config)stored.randomization=clone(config);else delete stored.randomization;recording.updatedAt=new Date().toISOString();
+    try{await saveRecordings(state.recordings);step.randomization=config?clone(config):undefined;return true;}catch(error){
+      if(childIndex===null)recording.steps[at]=old;else{const fields=lookupCreateWorkflow(recording?.steps?.[at])?.fields;if(fields)fields[childIndex]=old;}
+      showInline(error?.message||'Could not save randomization settings.');return false;
+    }
+  }
+  const tab=await chrome.tabs.get(state.recordingTabId).catch(()=>null);if(!tab?.id){showInline('The Salesforce recording tab is no longer available.');return false;}
+  const result=await sendTab(tab,{type:'UPDATE_RECORDING_STEP_RANDOMIZATION',index,localIndex:parent?.__fpFrameStepIndex??step.__fpFrameStepIndex??index,storageFrameId:parent?.__fpStorageFrameId??step.__fpStorageFrameId??0,frameId:parent?.frame?.frameId??step?.frame?.frameId,frame:parent?.frame||step?.frame,stepId:parent?.id||parent?.meta?.recordedAt||step?.id||step?.meta?.recordedAt,workflowChildIndex:childIndex,randomization:config||null});
+  if(!result?.ok){showInline(result?.message||'Could not save randomization settings to the active recording.');if(previousConfig)step.randomization=clone(previousConfig);return false;}
+  step.randomization=config?clone(config):undefined;return true;
+}
+
+function liveStepsRenderSignature(steps) { try { return JSON.stringify(steps || []); } catch { return String((steps || []).length); } }
+function updateLiveRecordingList(list, steps, force = false) {
+  if (!list) return;
+  const signature = liveStepsRenderSignature(steps);
+  if (!force && list.dataset.fpRenderSignature === signature) return;
+  const oldScrollTop = list.scrollTop;
+  const oldRows = [...list.querySelectorAll('.recording-live-row')];
+  const oldCount = Number(list.dataset.fpStepCount ?? oldRows.length);
+  const hasNewSteps = Array.isArray(steps) && steps.length > oldCount;
+  const scrollToLatest = () => requestAnimationFrame(() => { list.scrollTop = list.scrollHeight; });
+  const prefixMatches = oldRows.length === oldCount && oldRows.every((row, index) => row.dataset.liveRowKey === liveRowIdentity(steps?.[index]));
+  // New captures are appended without rebuilding existing DOM. This keeps focused
+  // controls and in-progress values intact, while the previous field panels fold up.
+  if (!force && prefixMatches && Array.isArray(steps) && steps.length > oldCount) {
+    // A newly captured field starts with its own collapsed editor. Do not retain an
+    // old open-editor token: the next 300 ms recording refresh would otherwise
+    // reopen previously collapsed fields when their rows are reconstructed.
+    collapseRandomizationGroup('live');
+    oldRows.forEach(row => row.querySelectorAll('.fp-randomization-editor.is-enabled').forEach(editor => editor.classList.add('is-collapsed')));
+    const template = document.createElement('template');
+    template.innerHTML = renderLiveRecordingRows(steps.slice(oldCount), oldCount).trim();
+    list.append(template.content);
+    list.dataset.fpStepCount = String(steps.length);
+    list.dataset.fpRenderSignature = signature;
+    scrollToLatest();
+    return;
+  }
+  // Preserve unsaved editor values and focus if a same-length update requires a
+  // refresh (for example, a Salesforce descriptor was enriched asynchronously).
+  const draftControls = [...list.querySelectorAll('[data-rand-option],[data-rand-enabled],[data-rand-allowed],[data-rand-strategy]')].map(el => ({
+    key:el.dataset.randKey, context:el.dataset.randContext, option:el.dataset.randOption || '', allowed:el.hasAttribute('data-rand-allowed') ? el.dataset.randValue || '' : null,
+    strategy:el.hasAttribute('data-rand-strategy'), enabled:el.hasAttribute('data-rand-enabled'), checked:!!el.checked, value:el.value,
+    focused:el===document.activeElement, start:typeof el.selectionStart==='number'?el.selectionStart:null, end:typeof el.selectionEnd==='number'?el.selectionEnd:null
+  }));
+  const openedWorkflowRandomizers = new Set([...list.querySelectorAll('.fp-live-child-randomizers[open]')].map(el => el.querySelector('[data-randomization-editor]')?.dataset.randKey?.match(/^wf-(\d+)-/)?.[1]).filter(x => x != null));
+  const openedCreateWorkflows = new Set([...list.querySelectorAll('[data-lookup-create-details][open]')].map(el => el.closest('.field-row')?.querySelector('[data-randomization-editor][data-rand-context="live"]')?.dataset.randKey).filter(x => x != null));
+  list.innerHTML = renderLiveRecordingRows(steps);
+  for (const workflow of list.querySelectorAll('.fp-live-child-randomizers')) {
+    const index = workflow.querySelector('[data-randomization-editor]')?.dataset.randKey?.match(/^wf-(\d+)-/)?.[1];
+    if (index != null && openedWorkflowRandomizers.has(index)) workflow.open = true;
+  }
+  for (const detail of list.querySelectorAll('[data-lookup-create-details]')) {
+    const key = detail.closest('.field-row')?.querySelector('[data-randomization-editor][data-rand-context="live"]')?.dataset.randKey;
+    if (key != null && openedCreateWorkflows.has(key)) detail.open = true;
+  }
+  let focusTarget = null;
+  for (const snapshot of draftControls) {
+    const match = [...list.querySelectorAll('[data-rand-option],[data-rand-enabled],[data-rand-allowed],[data-rand-strategy]')].find(el =>
+      el.dataset.randKey===snapshot.key && el.dataset.randContext===snapshot.context &&
+      (snapshot.strategy ? el.hasAttribute('data-rand-strategy') : snapshot.enabled ? el.hasAttribute('data-rand-enabled') : snapshot.allowed!==null ? el.hasAttribute('data-rand-allowed') && (el.dataset.randValue||'')===snapshot.allowed : el.dataset.randOption===snapshot.option));
+    if (!match) continue;
+    if (match.type==='checkbox') match.checked=snapshot.checked; else if (snapshot.value!==undefined) match.value=snapshot.value;
+    if (snapshot.focused) focusTarget={el:match,start:snapshot.start,end:snapshot.end};
+  }
+  if (focusTarget) {
+    try { focusTarget.el.focus({preventScroll:true}); if(focusTarget.start!==null)focusTarget.el.setSelectionRange(focusTarget.start,focusTarget.end); } catch {}
+  }
+  list.dataset.fpStepCount = String(Array.isArray(steps)?steps.length:0);
+  list.dataset.fpRenderSignature = signature;
+  if (hasNewSteps) scrollToLatest();
+  else requestAnimationFrame(() => { list.scrollTop = oldScrollTop; });
+}
+function renderLiveWorkflowRandomization(step,parentIndex){
+  const workflow=lookupCreateWorkflow(step);if(!workflow?.fields?.length)return '';
+  const randomized=workflow.fields.filter(f=>f?.randomization?.enabled).length;
+  return `<details class="fp-live-child-randomizers"><summary><span>New-record field values</span><small>${randomized?`${randomized} randomized`:'Optional randomization'}</small><span class="fp-randomization-chevron">${icon('chevron')}</span></summary><div class="fp-live-child-randomizers-body">${workflow.fields.map((child,i)=>`<div class="fp-live-child-randomizer"><div class="fp-live-child-label">${escapeHtml(child?.target?.label||'New-record field')}</div>${renderRandomizationEditor(child,`wf-${parentIndex}-${i}`,{context:'live-child'})}</div>`).join('')}</div></details>`;
+}
+function renderStepValue(step) {
+  return step?.randomization?.enabled
+    ? '<span class="fp-randomized-value">Randomized</span>'
+    : escapeHtml(fmtStepValue(step));
+}
+function liveRowIdentity(step) {
+  return String(step?.id || step?.meta?.recordedAt || step?.target?.key || `${step?.target?.label||'field'}:${step?.sequence||''}`);
+}
+function renderLiveRecordingRows(steps, startIndex = 0) {
+  return (steps || []).map((s, localIndex) => {
+    const i = startIndex + localIndex;
+    return `<div class="field-row recording-live-row" data-live-row-index="${i}" data-live-row-key="${escapeHtml(liveRowIdentity(s))}"><span class="step-number">${i + 1}</span><div class="field-main"><span class="field-name">${escapeHtml(s.target.label)}</span><span class="field-detail"><span class="field-value">${renderStepValue(s)}</span><span class="field-type" title="${escapeHtml(fieldTypeDisplayTitle(s))}">${escapeHtml(fieldTypeDisplay(s))}</span></span>${renderLookupCreateWorkflow(s)}${renderRandomizationEditor(s, String(i), { context: 'live' })}${renderLiveWorkflowRandomization(s,i)}</div><button class="live-remove-field" type="button" data-remove-live-step="${i}" title="Remove field from recording" aria-label="Remove ${escapeHtml(s.target.label)} from recording"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3h6l1 2h3v2H3V5h3l1-2Zm-2 5h10l-.7 9H5.7L5 8Zm3 2v5h1v-5H8Zm3 0v5h1v-5h-1Z"/></svg></button></div>`;
+  }).join('') || (startIndex || state.recording ? '' : '<div class="empty-state"><strong>Nothing recorded yet</strong></div>');
+}
+
+function lookupCreateWorkflow(step){
+  const workflow=step?.meta?.createNewRecord;
+  return workflow&&Array.isArray(workflow.fields)?workflow:null;
+}
+function renderWorkflowRecordType(workflow,parentIndex,editing){
+  const typeLabel=String(workflow?.recordTypeLabel||'').trim();
+  const options=[...new Set((Array.isArray(workflow?.recordTypeOptions)?workflow.recordTypeOptions:[]).map(x=>String(x||'').trim()).filter(Boolean))];
+  if(typeLabel&&!options.some(x=>x.toLowerCase()===typeLabel.toLowerCase()))options.unshift(typeLabel);
+  let valueMarkup;
+  if(editing&&options.length){
+    valueMarkup=`<select class="edit-control fp-workflow-record-type-select" data-edit-record-type="${parentIndex}" aria-label="Record type"><option value="" ${!typeLabel?'selected':''}>Salesforce default</option>${options.map(option=>`<option value="${escapeHtml(option)}" ${option.toLowerCase()===typeLabel.toLowerCase()?'selected':''}>${escapeHtml(option)}</option>`).join('')}</select>`;
+  }else if(editing){
+    valueMarkup=`<input class="edit-control fp-workflow-record-type-input" data-edit-record-type="${parentIndex}" value="${escapeHtml(typeLabel)}" placeholder="Salesforce default" aria-label="Record type label">`;
+  }else{
+    valueMarkup=`<strong>${escapeHtml(typeLabel||'Salesforce default')}</strong>`;
+  }
+  return `<div class="fp-workflow-record-type ${typeLabel?'':'is-auto'}"><span>Record type</span>${valueMarkup}</div>`;
+}
+function renderLookupCreateWorkflow(step,result=null,{compact=false,editing=false,parentIndex=null}={}){
+  const workflow=lookupCreateWorkflow(step);if(!workflow)return'';
+  const fields=Array.isArray(workflow.fields)?workflow.fields:[];
+  const objectLabel=String(workflow.objectLabel||'record');
+  const typeLabel=String(workflow.recordTypeLabel||'').trim();
+  const resultById=new Map((Array.isArray(result?.workflowResults)?result.workflowResults:[]).map(item=>[String(item?.id||''),item]));
+  const resultByLabel=new Map((Array.isArray(result?.workflowResults)?result.workflowResults:[]).map(item=>[String(item?.label||'').toLowerCase(),item]));
+  if(compact)return `<div class="fp-create-workflow-compact"><span class="fp-create-workflow-icon">${icon('add')}</span><span><strong>Create new ${escapeHtml(objectLabel)}</strong><small>${fields.length} field${fields.length===1?'':'s'}${typeLabel?` · ${escapeHtml(typeLabel)}`:''}</small></span></div>`;
+  const fieldRows=fields.map((child,index)=>{
+    const childResult=resultById.get(String(child?.id||''))||resultByLabel.get(String(child?.target?.label||'').toLowerCase());
+    const status=String(childResult?.status||'');
+    const statusClass=status==='filled'||status==='ok'?'is-done':status==='failed'?'is-failed':status==='skipped'?'is-skipped':'';
+    const statusText=status==='filled'||status==='ok'?'Filled':status==='failed'?'Failed':status==='skipped'?'Skipped':'';
+    if(editing){
+      const editKey=`wf-${parentIndex}-${index}`;
+      return `<li class="fp-workflow-field fp-workflow-field-editing"><span class="fp-workflow-field-number">${index+1}</span><div class="fp-workflow-field-copy"><strong>${escapeHtml(child?.target?.label||'Unnamed field')}</strong><div class="fp-workflow-child-editor">${renderEditField(child,editKey)}${renderRandomizationEditor(child,editKey,{context:"edit"})}</div></div><button class="delete-step iconbtn fp-workflow-delete-child" data-delete-workflow-child="${parentIndex}:${index}" title="Remove child field" aria-label="Remove ${escapeHtml(child?.target?.label||'child field')}" type="button">${icon('delete')}</button></li>`;
+    }
+    const childWasRandomized=status==='filled'&&!!childResult?.randomized&&childResult?.generatedValue!==undefined;
+    const childApplied=childWasRandomized?{...child,value:childResult.generatedValue,meta:{...(child?.meta||{}),...(childResult?.generationMetaPatch||{})}}:child;
+    const childDisplay=escapeHtml(fmtStepValue(childApplied));
+    return `<li class="fp-workflow-field ${statusClass}"><span class="fp-workflow-field-number">${index+1}</span><span class="fp-workflow-field-copy"><strong>${escapeHtml(child?.target?.label||'Unnamed field')}</strong><small>${childDisplay} <span>· ${escapeHtml(fieldTypeLabel(child))}</span></small>${childResult?.message&&status==='failed'?`<small class="fp-workflow-child-error">${escapeHtml(childResult.message)}</small>`:''}</span>${statusText?`<span class="fp-workflow-child-status">${escapeHtml(statusText)}</span>`:''}</li>`;
+  }).join('');
+  const instruction=result
+    ? (statusOf({result})==='failed'?'A step needs attention.':'Related record created and fields filled.')
+    : 'Opens New, fills the fields below, then saves.';
+  return `<details class="fp-create-workflow-details ${editing?'is-editing':''}" data-lookup-create-details ${editing?'open':''}><summary><span class="fp-create-workflow-icon">${icon('add')}</span><span class="fp-create-workflow-summary-copy"><strong>Create new ${escapeHtml(objectLabel)}</strong><small>${fields.length} field${fields.length===1?'':'s'} ${editing?'to edit':'to fill'}</small></span><span class="fp-create-workflow-chevron" aria-hidden="true">${icon('chevron')}</span></summary><div class="fp-create-workflow-body">${editing?'':`<p class="fp-create-workflow-instruction">${escapeHtml(instruction)}</p>`}${renderWorkflowRecordType(workflow,parentIndex,editing)}<div class="fp-workflow-fields-heading">New ${escapeHtml(objectLabel)} fields <span>${fields.length}</span></div><ol class="fp-workflow-fields">${fieldRows||'<li class="fp-workflow-empty">No fields captured yet.</li>'}</ol></div></details>`;
+}
+function renderLiveLookupCreationStatus(capture){
+  if(!capture?.active)return'';
+  const stage=capture.stage==='record-type'?(capture.recordTypeLabel?`Selected record type: ${capture.recordTypeLabel} · click Next to continue`:'Choose a record type, then click Next'):capture.stage==='opening'?'Opening the new-record form':'Fill the new record, then click Save';
+  return `<div class="fp-live-create-status" role="status" aria-live="polite"><div class="fp-live-create-icon">${icon('add')}</div><div class="fp-live-create-copy"><div class="fp-live-create-title">Creating a related record</div><div class="fp-live-create-context">${escapeHtml(capture.lookupLabel||'Lookup')} → New ${escapeHtml(capture.objectLabel||'record')}</div><div class="fp-live-create-stage">${escapeHtml(stage)}</div>${capture.recordTypeLabel?`<div class="fp-live-create-recordtype">Record type: <strong>${escapeHtml(capture.recordTypeLabel)}</strong></div>`:''}<div class="fp-live-create-count">${Number(capture.fieldCount||0)} field${Number(capture.fieldCount||0)===1?'':'s'} captured in this form</div></div></div>`;
 }
 
 function renderRecording() {
@@ -810,9 +1552,10 @@ function renderRecording() {
   const hasSteps = state.activeSteps.length > 0;
   return `<section class="recording-top sticky-action ${adding ? 'recording-top-append' : ''}">
     <div class="recording-state"><span class="recording-dot" aria-hidden="true"></span><div><strong>${adding ? 'Adding field' : 'Recording'}</strong><span id="recording-object">${escapeHtml(adding ? title : (state.context?.objectLabel || state.context?.objectApiName || 'Salesforce'))}</span></div></div>
-    <div class="recording-actions"><button class="pause-button${state.recordingPaused ? ' is-paused' : ''}" id="pauseRecording" type="button"><span class="pause-glyph" aria-hidden="true">${icon(state.recordingPaused ? 'play' : 'pause')}</span><span>${state.recordingPaused ? 'Resume' : 'Pause'}</span></button><button class="stop-button button-with-icon" id="stop" type="button">${icon('stop')}<span>${adding ? 'Done adding' : 'Stop recording'}</span></button></div>
+    <div class="recording-actions"><button class="pause-button${state.recordingPaused ? ' is-paused' : ''}" id="pauseRecording" type="button"><span class="pause-glyph" aria-hidden="true">${icon(state.recordingPaused ? 'play' : 'pause')}</span><span>${state.recordingPaused ? 'Resume' : 'Pause'}</span></button><button class="stop-button button-with-icon" id="stop" type="button" ${stopRecordingPromise ? 'disabled aria-busy="true"' : ''}>${icon('stop')}<span>${stopRecordingPromise ? 'Stopping…' : (adding ? 'Done adding' : 'Stop recording')}</span></button></div>
   </section>
   <div class="recording-note ${hasSteps ? 'is-hidden' : ''}" id="recording-note">${adding ? 'Edit Salesforce fields to add them to this recording.' : 'Edit Salesforce fields to record their values.'}</div>
+  <div id="lookup-create-capture-status">${renderLiveLookupCreationStatus(state.activeLookupCreation)}</div>
   <section class="field-list" id="recording-field-list">${renderLiveRecordingRows(state.activeSteps)}</section>`;
 }
 
@@ -832,11 +1575,23 @@ function renderSaveNamePrompt() {
 }
 
 async function hydrateDraftPicklists(draftObj){
-  const needs=(draftObj?.steps||[]).filter(s=>['Picklist','Multipicklist'].includes(fieldTypeLabel(s)) && (!typeOptions(s).length));
+  const allSteps=[];const queue=[...(Array.isArray(draftObj?.steps)?draftObj.steps:[])];const seen=new Set();
+  while(queue.length){const step=queue.shift();if(!step||typeof step!=='object'||seen.has(step))continue;seen.add(step);allSteps.push(step);const child=step?.meta?.createNewRecord?.fields;if(Array.isArray(child))queue.push(...child);}
+  const eligible=allSteps.filter(s=>['Picklist','Multipicklist'].includes(fieldTypeLabel(s)));
+  for(const s of eligible){const recovered=recoverPicklistLabel(s.value,s?.target?.label,typeOptions(s));if(recovered!==s.value){s.value=recovered;s.meta={...(s.meta||{}),selectedDisplayValue:recovered};}}
+  const needs=eligible.filter(s=>!typeOptions(s).length);
   if(!needs.length)return;
-  const resp=await chrome.runtime.sendMessage({type:'GET_FIELD_DESCRIPTORS',targets:needs.map(s=>s.target)}).catch(()=>null); if(!resp?.ok)return;
-  const byKey=new Map((resp.descriptors||[]).map(d=>[d.targetKey,d]));
-  for(const s of draftObj.steps||[]){const d=byKey.get(s.target?.key)||byKey.get(`api:${s.target?.apiName}`);if(!d)continue;s.target={...s.target,kind:d.kind||s.target.kind,fieldType:d.fieldType||s.target.fieldType,sfDataType:d.sfDataType||s.target.sfDataType,salesforceType:d.salesforceType||s.target.salesforceType,options:d.options?.length?d.options:s.target.options};}
+  const resp=await chrome.runtime.sendMessage({type:'GET_FIELD_DESCRIPTORS',targets:needs.map(s=>s.target)}).catch(()=>null);
+  if(!resp?.ok)return;
+  const byKey=new Map();
+  const addDescriptor=(key,d)=>{if(!key)return;const previous=byKey.get(key);byKey.set(key,previous?{...previous,...d,options:d.options?.length?d.options:(previous.options||[])}:d);};
+  for(const d of resp.descriptors||[]){addDescriptor(d.targetKey,d);addDescriptor(d.resolvedTargetKey,d);addDescriptor(d.apiName?`api:${d.apiName}`:'',d);}
+  for(const step of needs){
+    const d=byKey.get(step.target?.key)||byKey.get(step.target?.apiName?`api:${step.target.apiName}`:'');if(!d)continue;
+    const mergedOptions=d.options?.length?d.options:typeOptions(step);
+    step.target={...step.target,apiName:d.apiName||step.target?.apiName,objectApiName:d.objectApiName||step.target?.objectApiName,fieldPath:d.fieldPath||step.target?.fieldPath,kind:d.kind||step.target.kind,fieldType:d.fieldType||step.target.fieldType,sfDataType:d.sfDataType||step.target.sfDataType,salesforceType:d.salesforceType||step.target.salesforceType,options:mergedOptions};
+    const recovered=recoverPicklistLabel(step.value,step?.target?.label,mergedOptions);if(recovered!==step.value){step.value=recovered;step.meta={...(step.meta||{}),selectedDisplayValue:recovered};}
+  }
 }
 
 function renderEditField(s, i) {
@@ -848,8 +1603,18 @@ function renderEditField(s, i) {
   if (t === 'Multipicklist' && typeOptions(s).length) {
     return `<div class="multi-editor">${typeOptions(s).map(o => {
       const on = valuesArray(v).some(x => String(x).toLowerCase() === String(o.value).toLowerCase() || String(x).toLowerCase() === String(o.displayValue).toLowerCase());
-      return `<label><input type="checkbox" data-multi-index="${i}" data-multi-value="${escapeHtml(o.value)}" ${on ? 'checked' : ''}><span>${escapeHtml(o.displayValue || o.value)}</span></label>`;
+      return `<label><input type="checkbox" data-multi-index="${i}" data-multi-value="${escapeHtml(o.displayValue || o.value)}" ${on ? 'checked' : ''}><span>${escapeHtml(o.displayValue || o.value)}</span></label>`;
     }).join('')}</div>`;
+  }
+  if (t === 'Address') {
+    const address = v && typeof v === 'object' ? v : {};
+    // Lightning's address component exposes the region as `province`; keep the
+    // original component key so editing does not create a second, ignored `state`
+    // property alongside the value the live Salesforce control actually uses.
+    const parts = [
+      ['street','Street',['Street']],['city','City',['City']],['province','State / Province',['state','State','province']],['postalCode','Postal code',['PostalCode','postalCode']],['country','Country',['Country']]
+    ];
+    return `<div class="fp-address-editor">${parts.map(([part,label,aliases])=>{const value=address[part] ?? aliases.map(alias=>address[alias]).find(v=>v!==undefined) ?? '';return `<label><span>${label}</span><input class="edit-control" type="text" data-address-edit-part="${i}" data-address-part="${part}" value="${escapeHtml(value)}" placeholder="${label}"></label>`}).join('')}</div>`;
   }
   if (t === 'Date') {
     const meta = s?.meta || {};
@@ -860,7 +1625,11 @@ function renderEditField(s, i) {
     const exact = String(s.value || '').slice(0, 10);
     return `<input class="edit-control" type="date" data-edit-value="${i}" value="${escapeHtml(exact)}" aria-label="Recorded date">`;
   }
-  return `<input class="edit-control" type="text" data-edit-value="${i}" value="${escapeHtml(Array.isArray(v) ? v.join('; ') : v && typeof v === 'object' && 'displayValue' in v ? v.displayValue : String(v ?? ''))}" placeholder="Recorded value">`;
+  if (t === 'Date/Time') return `<input class="edit-control" type="datetime-local" data-edit-value="${i}" value="${escapeHtml(String(v || '').slice(0,16))}" aria-label="Recorded date and time">`;
+  if (t === 'Time') return `<input class="edit-control" type="time" data-edit-value="${i}" value="${escapeHtml(String(v || '').slice(0,5))}" aria-label="Recorded time">`;
+  if (t === 'Long Text') return `<textarea class="edit-control fp-longtext-edit" data-edit-value="${i}" rows="3" placeholder="Recorded value">${escapeHtml(String(v ?? ''))}</textarea>`;
+  const inputType = t === 'Email' ? 'email' : t === 'Phone' ? 'tel' : t === 'URL' ? 'url' : 'text';
+  return `<input class="edit-control" type="${inputType}" data-edit-value="${i}" value="${escapeHtml(Array.isArray(v) ? v.join('; ') : v && typeof v === 'object' && 'displayValue' in v ? v.displayValue : String(v ?? ''))}" placeholder="Recorded value">`;
 }
 
 function eligibleStepIndexes(steps) {
@@ -930,11 +1699,11 @@ function renderDetail(r) {
       const eligible = s?.enabled !== false;
       return `<label class="field-row selection-field-row ${checked ? 'is-selected' : ''} ${eligible ? '' : 'is-ineligible'}" data-select-step="${i}">
         <input class="run-select-checkbox" type="checkbox" data-select-checkbox="${i}" ${checked ? 'checked' : ''} ${eligible ? '' : 'disabled'} aria-label="Include ${escapeHtml(s?.target?.label || 'field')} in Autofill">
-        <span class="field-main"><span class="field-name">${escapeHtml(s?.target?.label || 'Unnamed field')}</span><span class="field-detail"><span class="field-value">${escapeHtml(fmtStepValue(s))}</span><span class="field-type">${escapeHtml(fieldTypeLabel(s))}</span></span></span>
+        <div class="field-main"><span class="field-name">${escapeHtml(s?.target?.label || 'Unnamed field')}</span><span class="field-detail"><span class="field-value">${renderStepValue(s)}</span><span class="field-type" title="${escapeHtml(fieldTypeDisplayTitle(s))}">${escapeHtml(fieldTypeDisplay(s))}</span></span>${renderLookupCreateWorkflow(s,null,{compact:true})}</div>
       </label>`;
     }
     return `<div class="field-row ${state.editing ? 'editing' : 'clickable'}" ${state.editing ? '' : `data-focus-step="${i}"`}>
-      <span class="step-number">${i + 1}</span><span class="field-main"><span class="field-name">${escapeHtml(s?.target?.label || 'Unnamed field')}</span>${state.editing ? `<span class="edit-wrap">${renderEditField(s, i)}<button class="delete-step iconbtn" data-delete-step="${i}" title="Remove field" aria-label="Remove field" type="button">${icon('delete')}</button></span>` : `<span class="field-detail"><span class="field-value">${escapeHtml(fmtStepValue(s))}</span><span class="field-type">${escapeHtml(fieldTypeLabel(s))}</span></span>`}</span>${state.editing ? '' : `<span class="row-chevron" aria-hidden="true">${icon('arrowRight')}</span>`}
+      <span class="step-number">${i + 1}</span><div class="field-main">${state.editing ? `<div class="fp-field-name-row"><span class="field-name">${escapeHtml(s?.target?.label || 'Unnamed field')}</span><button class="delete-step iconbtn" data-delete-step="${i}" title="Remove field" aria-label="Remove field" type="button">${icon('delete')}</button></div><span class="edit-wrap">${renderEditField(s, i)}${renderRandomizationEditor(s,String(i),{context:"edit"})}</span>${renderLookupCreateWorkflow(s,null,{editing:true,parentIndex:i})}` : `<span class="field-name">${escapeHtml(s?.target?.label || 'Unnamed field')}</span><span class="field-detail"><span class="field-value">${renderStepValue(s)}</span><span class="field-type" title="${escapeHtml(fieldTypeDisplayTitle(s))}">${escapeHtml(fieldTypeDisplay(s))}</span></span>${renderLookupCreateWorkflow(s)}`}</div>${state.editing ? '' : `<span class="row-chevron" aria-hidden="true">${icon('arrowRight')}</span>`}
     </div>`;
   }).join('');
   const selectionFooter = state.selectionMode
@@ -942,7 +1711,7 @@ function renderDetail(r) {
     : '';
   return `<section class="detail-page">
   <div class="testing-topbar fp-route-header"><div class="testing-heading-wrap">${backButton('Back', 'backHome')}<div class="testing-heading"><div class="eyebrow">Recording</div><h1>${escapeHtml(recordingTitle(x))}</h1><div class="testing-subtitle">${escapeHtml(recordingMeta(x))} <span aria-hidden="true">•</span> ${escapeHtml(objectLabel(x?.context || {}))}</div></div></div></div>
-  ${state.editing ? `<label class="recording-name-editor"><span>Recording name</span><input class="edit-control" id="recordingName" value="${escapeHtml(x.name||recordingTitle(x))}" placeholder="Recording name"></label>` : ''}
+  ${state.editing ? `<div class="recording-name-editor"><div class="recording-name-label-row"><label for="recordingName">Recording name</label><button class="secondary action-button button-with-icon delete-recording-edit" id="deleteRecordingEdit" type="button">${icon('delete')}<span>Delete recording</span></button></div><input class="edit-control" id="recordingName" value="${escapeHtml(x.name||recordingTitle(x))}" placeholder="Recording name"></div>` : ''}
   <div class="actions detail-actions">${detailActions}</div>
   ${!state.editing ? `<div class="setting-row compact-fill-empty"><div class="setting-copy"><strong>Fill empty fields only</strong><span>Existing Salesforce values won't be changed.</span></div><label class="switch"><input type="checkbox" id="fillEmptyOnly" ${state.fillEmptyOnly ? 'checked' : ''}><span class="slider"></span></label></div>` : ''}
   <section class="detail-field-section"><div class="section-title-row detail-fields-title"><h2>Recorded fields</h2>${fieldHeaderAction}</div>
@@ -1004,14 +1773,22 @@ function renderResult() {
     const finalReason = pending || reason;
     const statusLabel=st==='filled'?'Filled':st==='skipped'?'Skipped':'Failed';
     const statusIcon=st==='filled'?'✓':st==='skipped'?'↷':'×';
-    const recordedValue = escapeHtml(fmtStepValue(x.step));
+    // Results show the value that was actually applied, not merely the fact that
+    // randomization was enabled in the saved recording. Skipped fields retain their
+    // original value because the generator deliberately runs only after the empty check.
+    const didApplyRandomValue=st==='filled'&&x.result?.randomized&&x.result?.generatedValue!==undefined;
+    const appliedStep=didApplyRandomValue?{...x.step,value:x.result.generatedValue,meta:{...(x.step?.meta||{}),...(x.result?.generationMetaPatch||{})}}:x.step;
+    const appliedValue=didApplyRandomValue?escapeHtml(fmtStepValue(appliedStep)):escapeHtml(fmtStepValue(x.step));
     const valueMarkup = st === 'skipped'
-      ? `<span class="result-value-wrap"><span class="result-row-value">${recordedValue}</span><button class="result-use" data-overwrite-index="${x.index}" type="button" aria-label="Use recorded value">Use</button></span>`
-      : `<span class="result-row-value">${recordedValue}</span>`;
-    const type=fieldTypeLabel(x.step);
-    const visibleReason=(st==='failed'||st==='skipped')?finalReason:'';
+      ? `<span class="result-value-wrap"><span class="result-row-value">${appliedValue}</span><button class="result-use" data-overwrite-index="${x.index}" type="button" aria-label="Use recorded value">Use</button></span>`
+      : `<span class="result-value-wrap"><span class="result-row-value">${appliedValue}</span></span>`;
+    const type=fieldTypeDisplay(x.step);
+    const visibleReason=(st==='failed'||st==='skipped')?finalReason:(x.result?.randomizationWarning||'');
     const detailReason=visibleReason?`<span class="result-row-reason" title="${escapeHtml(visibleReason)}">${escapeHtml(visibleReason)}</span>`:'';
-    return `<div class="result-row ${st}" role="listitem" data-focus-index="${x.index}" tabindex="0" aria-label="${escapeHtml(`${x?.step?.target?.label || 'Field'}, ${statusLabel}${visibleReason?`. ${visibleReason}`:''}. Select to locate this field in Salesforce.`)}"><span class="result-row-main"><span class="result-row-title">${escapeHtml(x?.step?.target?.label || 'Unnamed field')}</span><span class="result-row-value-line">${valueMarkup}</span>${detailReason}</span><span class="result-row-side"><span class="result-status-pill"><span class="result-status-icon" aria-hidden="true">${statusIcon}</span><span>${statusLabel}</span></span><span class="result-type">${escapeHtml(type)}</span></span><span class="result-chevron" aria-hidden="true">${icon('arrowRight')}</span></div>`;
+    const workflowDetails=renderLookupCreateWorkflow(x.step,x.result);
+    const rowLabel=`${x?.step?.target?.label || 'Field'}, ${statusLabel}${visibleReason?`. ${visibleReason}`:''}. Select to locate this field in Salesforce.`;
+    if(lookupCreateWorkflow(x.step)){const childCount=lookupCreateWorkflow(x.step).fields.length;return `<div class="result-row result-row-has-workflow ${st}" role="listitem" data-focus-index="${x.index}" tabindex="0" aria-label="${escapeHtml(rowLabel)}"><div class="result-row-main"><div class="result-row-line1"><span class="result-row-title">${escapeHtml(x?.step?.target?.label || 'Unnamed field')}</span><span class="result-status-pill"><span class="result-status-icon" aria-hidden="true">${statusIcon}</span><span>${statusLabel}</span></span></div><span class="result-row-value-line">${valueMarkup}</span><span class="fp-result-workflow-meta">Lookup + New · ${childCount} field${childCount===1?'':'s'}</span>${detailReason}${workflowDetails}</div><span class="result-chevron" aria-hidden="true">${icon('arrowRight')}</span></div>`;}
+    return `<div class="result-row ${st}" role="listitem" data-focus-index="${x.index}" tabindex="0" aria-label="${escapeHtml(rowLabel)}"><div class="result-row-main"><span class="result-row-title">${escapeHtml(x?.step?.target?.label || 'Unnamed field')}</span><span class="result-row-value-line">${valueMarkup}</span>${detailReason}</div><span class="result-row-side"><span class="result-status-pill"><span class="result-status-icon" aria-hidden="true">${statusIcon}</span><span>${statusLabel}</span></span><span class="result-type">${escapeHtml(type)}</span></span><span class="result-chevron" aria-hidden="true">${icon('arrowRight')}</span></div>`;
   }).join('');
   const emptyResult = `<div class="result-empty"><strong>${filter === 'failed' ? 'No failed fields' : filter === 'skipped' ? 'No skipped fields' : filter === 'filled' ? 'No filled fields' : 'No results'}</strong></div>`;
   const inTesting = !!state.testingAutofillActive;
@@ -1025,16 +1802,20 @@ function renderResult() {
 }
 
 function backButton(label = 'Back', id = 'backHome') {
-  return `<button class="backtop" id="${id}" type="button"><span class="back-icon" aria-hidden="true">${icon('arrowBack')}</span><span>${label}</span></button>`;
+  // Compact, text-free back control shared by every ForcePilot sidebar route.
+  // Keep the accessible name even though the visible label is intentionally omitted.
+  return `<button class="backtop backtop-icon-only" id="${id}" type="button" aria-label="${escapeHtml(label || 'Back')}" title="${escapeHtml(label || 'Back')}"><svg class="back-chevron-svg" aria-hidden="true" width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M15 18L9 12L15 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
 }
 
 function bind() {
-  document.getElementById('startTesting')?.addEventListener('click', startNewTestingSession);
-  document.getElementById('resumeTesting')?.addEventListener('click', resumeTestingSession);
-  document.getElementById('cancelStartTesting')?.addEventListener('click', closeTestingLifecycleDialog);
-  document.getElementById('cancelStartTestingAction')?.addEventListener('click', closeTestingLifecycleDialog);
-  document.getElementById('resumeSavedTesting')?.addEventListener('click', async () => { state.testingLifecycleDialog = false; await resumeTestingSession(); });
-  document.getElementById('discardAndStartTesting')?.addEventListener('click', discardAndStartTesting);
+  bindRandomizationDelegation();
+  document.getElementById('startTesting')?.addEventListener('click', openTestingDashboard);
+  document.querySelectorAll('[data-resume-testing-session]').forEach(button => button.addEventListener('click', e => resumeTestingSession(e.currentTarget.dataset.resumeTestingSession)));
+  document.querySelectorAll('[data-delete-testing-session]').forEach(button => button.addEventListener('click', e => deleteResumableTestingSession(e.currentTarget.dataset.deleteTestingSession)));
+  document.getElementById('startNewTestSession')?.addEventListener('click', startNewTestingSession);
+  document.getElementById('testingViewAllSessions')?.addEventListener('click', () => { state.testingShowAllSessions = !state.testingShowAllSessions; render(); });
+  document.getElementById('startNewTestSessionInline')?.addEventListener('click', startNewTestingSession);
+  document.getElementById('testingSessionSelector')?.addEventListener('change', e => resumeTestingSession(e.currentTarget.value));
   document.getElementById('acceptTestingConfirm')?.addEventListener('click', () => resolveTestingConfirm(true));
   document.getElementById('cancelTestingConfirm')?.addEventListener('click', () => resolveTestingConfirm(false));
   document.getElementById('cancelTestingConfirmAction')?.addEventListener('click', () => resolveTestingConfirm(false));
@@ -1058,17 +1839,37 @@ function bind() {
   document.getElementById('doneSelectingFields')?.addEventListener('click', exitFieldSelectionMode);
   document.getElementById('selectAllFields')?.addEventListener('click', () => { const r = state.recordings[state.selectedId]; const total = eligibleStepIndexes(r?.steps).length; if (state.selectedStepIndexes.size === total) clearAllFields(); else selectAllFields(); });
   document.getElementById('autofillSelected')?.addEventListener('click', () => runSelectedFields());
-  document.getElementById('addField')?.addEventListener('click', async () => { if (state.editing) await saveInline({ renderAfter: false }); await startAddField(); });
+  document.getElementById('addField')?.addEventListener('click', async e => {
+    const button=e.currentTarget;
+    if(button.disabled)return;
+    button.disabled=true;
+    suppressRecordingStorageRender=true;
+    try {
+      // Persist edits without letting the storage-change listener briefly redraw
+      // the details screen before the Salesforce recorder opens.
+      if (state.editing) await saveInline({ renderAfter: false });
+      await startAddField();
+    } finally {
+      suppressRecordingStorageRender=false;
+      if(button.isConnected && state.view!=='recording'){button.disabled=false;render();}
+    }
+  });
   document.getElementById('edit')?.addEventListener('click', async () => { state.draft = clone(state.recordings[state.selectedId]); state.selectionMode = false; state.selectedStepIndexes = new Set(); state.editing = true; render(); await hydrateDraftPicklists(state.draft); render(); });
+  document.getElementById('deleteRecordingEdit')?.addEventListener('click', async () => { if(!state.editing)return; const rec=state.recordings[state.selectedId]; if(!rec)return; const confirmed=await requestTestingConfirm({title:'Delete recording',message:`Delete “${rec.name||'Untitled recording'}” with ${(rec.steps||[]).length} field${(rec.steps||[]).length===1?'':'s'}? This cannot be undone.`,confirmLabel:'Delete recording',cancelLabel:'Cancel',danger:true}); if(!confirmed)return; delete state.recordings[state.selectedId]; state.selectedId=Object.keys(state.recordings)[0]||null; state.editing=false; state.draft=null; await saveRecordings(state.recordings); render(); });
   document.getElementById('cancelEdit')?.addEventListener('click', () => { state.editing = false; state.draft = null; state.selectionMode = false; state.selectedStepIndexes = new Set(); render(); });
   document.getElementById('saveInline')?.addEventListener('click', saveInline);
   document.getElementById('fillEmptyOnly')?.addEventListener('change', async e => { state.fillEmptyOnly = e.target.checked; await saveSettings({...await getSettings(), fillEmptyOnly: state.fillEmptyOnly}); });
   document.getElementById('refreshHeader')?.addEventListener('click', refresh);
+  document.getElementById('toggleDarkMode')?.addEventListener('click', toggleSidepanelTheme);
   document.getElementById('settings')?.addEventListener('click', () => chrome.runtime.openOptionsPage());
   document.getElementById('firstRunGetStarted')?.addEventListener('click', dismissFirstRunTour);
+  document.getElementById('testingFirstRunGetStarted')?.addEventListener('click', dismissTestingFirstRunTour);
+  document.getElementById('testingFirstRunOverlay')?.addEventListener('click', e => { if (e.target?.id === 'testingFirstRunOverlay') dismissTestingFirstRunTour(); });
   document.getElementById('firstRunOverlay')?.addEventListener('click', event => { if (event.target?.id === 'firstRunOverlay') dismissFirstRunTour(); });
 
-  document.getElementById('testingBack')?.addEventListener('click', exitTestingToHome);
+  document.getElementById('testingDashboardBack')?.addEventListener('click', exitTestingToHome);
+  document.getElementById('backToTestingSummary')?.addEventListener('click', () => resumeTestingSession(state.testingSession?.id));
+  document.getElementById('testingBack')?.addEventListener('click', exitTestingToDashboard);
   document.getElementById('testingEvidenceName')?.addEventListener('input', event => {
     state.testingEvidenceNameInput = event.currentTarget.value;
     if (state.testingEvidenceNameError) { state.testingEvidenceNameError = ''; event.currentTarget.removeAttribute('aria-invalid'); document.getElementById('testingEvidenceNameError')?.remove(); }
@@ -1080,13 +1881,24 @@ function bind() {
   document.getElementById('skipTestingCases')?.addEventListener('click', startEvidenceOnlyTestingSession);
   document.getElementById('backToTestingPaste')?.addEventListener('click', () => {
     state.testingPasteError = '';
+    state.testingEditingExistingSession = false;
     state.view = 'testing-paste';
     render();
   });
+  document.getElementById('backFromTestingEditor')?.addEventListener('click', async () => {
+    state.testingEditingExistingSession = false;
+    state.view = 'testing-workspace';
+    await persistTestingSession();
+    render();
+  });
   document.querySelectorAll('[data-start-testing]').forEach(btn => btn.addEventListener('click', startTestingWorkspace));
-  document.getElementById('editTestingCases')?.addEventListener('click', () => { state.testingOpenMenu = null; state.view = 'testing-preview'; render(); });
-  document.getElementById('captureTestingScreenshot')?.addEventListener('click', () => captureTestingEvidence(state.testingSession?.currentEvidenceStepId || null));
-  document.getElementById('captureTestingScreenshotBottom')?.addEventListener('click', () => captureTestingEvidence(state.testingSession?.currentEvidenceStepId || null));
+  document.getElementById('editTestingCases')?.addEventListener('click', () => { state.testingOpenMenu = null; state.testingEditingExistingSession = true; state.view = 'testing-preview'; render(); requestAnimationFrame(() => autoResizeTestingTextareas()); });
+  document.getElementById('editTestingSessionName')?.addEventListener('click', () => { state.testingSessionNameEditing = true; render(); requestAnimationFrame(() => { const input = document.getElementById('testingSessionNameInline'); input?.focus(); input?.select(); }); });
+  document.getElementById('saveTestingSessionNameInline')?.addEventListener('click', saveTestingSessionNameInline);
+  document.getElementById('cancelTestingSessionNameInline')?.addEventListener('click', () => { state.testingSessionNameEditing = false; render(); });
+  document.getElementById('testingSessionNameInline')?.addEventListener('keydown', e => { if(e.key === 'Enter'){ e.preventDefault(); saveTestingSessionNameInline(); } if(e.key === 'Escape'){ e.preventDefault(); state.testingSessionNameEditing = false; render(); } });
+  document.getElementById('captureTestingScreenshot')?.addEventListener('click', () => captureTestingEvidence(state.testingActiveCaseId || state.testingSession?.testCases?.[0]?.id || null));
+  document.getElementById('captureTestingScreenshotBottom')?.addEventListener('click', () => captureTestingEvidence(state.testingActiveCaseId || state.testingSession?.testCases?.[0]?.id || null));
   document.querySelectorAll('[data-finish-testing]').forEach(btn => btn.addEventListener('click', finishTestingSession));
   document.getElementById('exportTestingWord')?.addEventListener('click', () => {
     if (state.testingExportCompleted && state.testingExportBlob) downloadTestingWordAgain();
@@ -1099,7 +1911,6 @@ function bind() {
   });
   document.getElementById('downloadTestingZipAgain')?.addEventListener('click', downloadTestingZipAgain);
   document.querySelectorAll('[data-testing-done]').forEach(button => button.addEventListener('click', handleTestingDone));
-  document.getElementById('downloadTestingTemplate')?.addEventListener('click', downloadTestingTemplate);
   document.getElementById('testingPaste')?.addEventListener('input', e => {
     state.testingPasteText = e.currentTarget.value;
     const button = document.getElementById('parseTestingPaste');
@@ -1109,25 +1920,40 @@ function bind() {
     el.addEventListener(el.tagName === 'TEXTAREA' ? 'input' : 'change', handleTestingEditorInput);
   });
   document.querySelectorAll('[data-toggle-testing-case]').forEach(btn => btn.addEventListener('click', e => toggleTestingCase(e.currentTarget.dataset.toggleTestingCase)));
+  document.querySelectorAll('[data-activate-testing-case]').forEach(el => el.addEventListener('click', e => { if (e.target.closest('button')) return; const id = e.currentTarget.dataset.activateTestingCase; if (!id || !state.testingSession?.testCases?.some(tc => tc.id === id)) return; state.testingActiveCaseId = id; state.testingSession.currentEvidenceTestCaseId = id; persistTestingSession().catch(() => {}); render(); }));
   document.querySelectorAll('[data-testing-expand-all]').forEach(btn => btn.addEventListener('click', expandTestingAll));
   document.querySelectorAll('[data-testing-collapse-all]').forEach(btn => btn.addEventListener('click', collapseTestingAll));
   document.querySelectorAll('[data-testing-case-menu]').forEach(btn => btn.addEventListener('click', e => { e.stopPropagation(); const id = e.currentTarget.dataset.testingCaseMenu; state.testingOpenMenu = state.testingOpenMenu === `tc:${id}` ? null : `tc:${id}`; render(); }));
-  document.querySelectorAll('[data-testing-step-menu]').forEach(btn => btn.addEventListener('click', e => { e.stopPropagation(); const id = e.currentTarget.dataset.testingStepMenu; state.testingOpenMenu = state.testingOpenMenu === `step:${id}` ? null : `step:${id}`; render(); }));
-  document.querySelectorAll('[data-add-step-to-case]').forEach(btn => btn.addEventListener('click', e => { e.stopPropagation(); addTestingStep(e.currentTarget.dataset.addStepToCase); }));
   document.querySelectorAll('[data-add-test-case]').forEach(btn => btn.addEventListener('click', addTestingCase));
   document.querySelectorAll('[data-delete-test-case]').forEach(btn => btn.addEventListener('click', e => { if (!e.currentTarget.disabled) deleteTestingCase(e.currentTarget.dataset.deleteTestCase); }));
-  document.querySelectorAll('[data-delete-test-step]').forEach(btn => btn.addEventListener('click', e => { if (!e.currentTarget.disabled) deleteTestingStep(e.currentTarget.dataset.tcId, e.currentTarget.dataset.deleteTestStep); }));
-  document.querySelectorAll('[data-move-step]').forEach(btn => btn.addEventListener('click', e => { if (!e.currentTarget.disabled) moveTestingStep(e.currentTarget.dataset.tcId, e.currentTarget.dataset.stepId, e.currentTarget.dataset.moveStep); }));
-  document.querySelectorAll('[data-toggle-step-evidence]').forEach(btn => btn.addEventListener('click', e => toggleTestingEvidence(e.currentTarget.dataset.toggleStepEvidence)));
   document.querySelectorAll('[data-toggle-general-evidence]').forEach(btn => btn.addEventListener('click', () => { state.testingGeneralEvidenceExpanded = !state.testingGeneralEvidenceExpanded; render(); }));
   document.getElementById('testingPasteScreenshot')?.addEventListener('click', pasteTestingScreenshot);
-  document.querySelectorAll('[data-capture-step]').forEach(btn => btn.addEventListener('click', e => captureTestingEvidence(e.currentTarget.dataset.captureStep)));
+  document.querySelectorAll('[data-paste-case]').forEach(btn => btn.addEventListener('click', e => pasteTestingScreenshot(e.currentTarget.dataset.pasteCase)));
+  document.querySelectorAll('[data-capture-case]').forEach(btn => btn.addEventListener('click', e => captureTestingEvidence(e.currentTarget.dataset.captureCase)));
   document.querySelectorAll('[data-copy-evidence]').forEach(btn => btn.addEventListener('click', e => copyTestingEvidence(e.currentTarget.dataset.copyEvidence)));
   document.querySelectorAll('[data-associate-evidence]').forEach(btn => btn.addEventListener('click', e => { state.testingAssociatingEvidenceId = e.currentTarget.dataset.associateEvidence; render(); }));
   document.querySelectorAll('[data-remove-evidence]').forEach(btn => btn.addEventListener('click', e => removeTestingEvidence(e.currentTarget.dataset.removeEvidence)));
   document.querySelectorAll('[data-preview-evidence]').forEach(btn => btn.addEventListener('click', e => previewTestingEvidence(e.currentTarget.dataset.previewEvidence)));
-  document.getElementById('closeAssociateDialog')?.addEventListener('click', () => { const id=state.testingAssociatingEvidenceId; state.testingAssociatingEvidenceId = null; render(); document.querySelector(`[data-associate-evidence="${id}"]`)?.focus(); });
-  document.querySelectorAll('[data-associate-step]').forEach(btn => btn.addEventListener('click', e => associateTestingEvidence(e.currentTarget.dataset.associateEvidence, e.currentTarget.dataset.associateStep)));
+  document.querySelector('.testing-workspace-scroll')?.addEventListener('scroll', positionTestingStatusMenu, { passive: true });
+  window.addEventListener('resize', positionTestingStatusMenu, { passive: true });
+  document.querySelectorAll('[data-open-testing-status]').forEach(btn => btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const id = e.currentTarget.dataset.openTestingStatus;
+    state.testingStatusMenuId = state.testingStatusMenuId === id ? null : id;
+    render();
+    if (state.testingStatusMenuId) requestAnimationFrame(() => {
+      positionTestingStatusMenu();
+      const menu = document.querySelector(`[data-testing-status-menu="${CSS.escape(id)}"]`);
+      (menu?.querySelector('.testing-status-option.is-selected') || menu?.querySelector('[role="menuitem"]'))?.focus({ preventScroll: true });
+    });
+  }));
+  document.querySelectorAll('[data-testing-status]').forEach(btn => btn.addEventListener('click', e => setTestingCaseStatus(e.currentTarget.dataset.testingStatusTc, e.currentTarget.dataset.testingStatus)));
+  document.querySelectorAll('[data-note-evidence]').forEach(btn => btn.addEventListener('click', e => openTestingNote(e.currentTarget.dataset.noteEvidence)));
+  document.querySelectorAll('[data-note-cancel]').forEach(btn => btn.addEventListener('click', closeTestingNote));
+  document.querySelectorAll('[data-note-save]').forEach(btn => btn.addEventListener('click', e => saveTestingNote(e.currentTarget.dataset.noteSave)));
+  document.querySelectorAll('[data-note-input]').forEach(input => { autoResizeTestingNote(input); input.addEventListener('input', () => autoResizeTestingNote(input)); });
+  document.getElementById('closeAssociateDialog')?.addEventListener('click', () => { const id=state.testingAssociatingEvidenceId; state.testingAssociatingEvidenceId = null; render(); document.querySelector(`[data-associate-evidence="${id}"]`)?.focus({ preventScroll: true }); });
+  document.querySelectorAll('[data-associate-case]').forEach(btn => btn.addEventListener('click', e => associateTestingEvidence(e.currentTarget.dataset.associateEvidence, e.currentTarget.dataset.associateCase)));
   document.getElementById('testingAutofillOpen')?.addEventListener('click', () => {
     state.testingAutofillPickerOpen = true;
     state.testingAutofillQuery = '';
@@ -1185,59 +2011,93 @@ function bind() {
   });
   document.getElementById('retryFailed')?.addEventListener('click', retryFailed);
   document.getElementById('search')?.addEventListener('input', e => { state.filter=e.target.value; const pos=Number.isFinite(e.target.selectionStart)?e.target.selectionStart:state.filter.length; clearTimeout(window.fpSearchTimer); window.fpSearchTimer=setTimeout(()=>{render();const el=document.getElementById('search');if(el){el.focus();el.setSelectionRange(pos,pos)}},80); });
-  document.querySelectorAll('.recording-row[data-id]').forEach(b => b.addEventListener('click', () => { state.selectedId = b.dataset.id; state.run = null; state.view = 'detail'; state.editing = false; state.selectionMode = false; state.selectedStepIndexes = new Set(); render(); }));
+  document.getElementById('testingSessionSearch')?.addEventListener('input', e => { state.testingSessionSearch=e.target.value; state.testingShowAllSessions=false; const pos=Number.isFinite(e.target.selectionStart)?e.target.selectionStart:state.testingSessionSearch.length; clearTimeout(window.fpTestingSessionSearchTimer); window.fpTestingSessionSearchTimer=setTimeout(()=>{render();const el=document.getElementById('testingSessionSearch');if(el){el.focus();el.setSelectionRange(pos,pos)}},80); });
+  document.querySelectorAll('.recording-row[data-id]').forEach(b => b.addEventListener('click', async () => {
+    const id=b.dataset.id;state.selectedId=id;state.run=null;state.view='detail';state.editing=false;state.selectionMode=false;state.selectedStepIndexes=new Set();render();
+    const recording=state.recordings[id];if(!recording)return;
+    const before=JSON.stringify(recording.steps||[]);
+    await hydrateDraftPicklists(recording);
+    if(before!==JSON.stringify(recording.steps||[])){
+      recording.updatedAt=new Date().toISOString();state.recordings[id]=recording;
+      await saveRecordings(state.recordings).catch(()=>{});
+      if(state.view==='detail'&&state.selectedId===id&&!state.editing)render();
+    }
+  }));
   document.querySelectorAll('[data-result-tab]').forEach(b => b.addEventListener('click', () => { state.resultTab = b.dataset.resultTab; render(); document.querySelector(`[data-result-tab="${state.resultTab}"]`)?.focus(); }));
   document.querySelectorAll('[data-select-checkbox]').forEach(box => {
     box.addEventListener('click', e => e.stopPropagation());
     box.addEventListener('change', e => toggleSelectedStep(Number(e.currentTarget.dataset.selectCheckbox)));
   });
-  document.querySelectorAll('[data-focus-step]').forEach(b => b.addEventListener('click', e => focusStep(Number(e.currentTarget.dataset.focusStep))));
-  document.querySelectorAll('[data-remove-live-step]').forEach(b => b.addEventListener('click', async e => { e.stopPropagation(); await removeLiveRecordingStep(Number(e.currentTarget.dataset.removeLiveStep)); }));
-  document.querySelectorAll('[data-focus-index]').forEach(b => { b.addEventListener('click', e => { if (e.target.closest('[data-overwrite-index]')) return; focusIndex(Number(e.currentTarget.dataset.focusIndex)); }); b.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && !e.target.closest('[data-overwrite-index]')) { e.preventDefault(); focusIndex(Number(e.currentTarget.dataset.focusIndex)); } }); });
+  document.querySelectorAll('[data-focus-step]').forEach(b => b.addEventListener('click', e => { if(e.target.closest('[data-lookup-create-details]'))return; focusStep(Number(e.currentTarget.dataset.focusStep)); }));
+  document.querySelectorAll('[data-focus-index]').forEach(b => { b.addEventListener('click', e => { if (e.target.closest('[data-overwrite-index],[data-lookup-create-details]')) return; focusIndex(Number(e.currentTarget.dataset.focusIndex)); }); b.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && !e.target.closest('[data-overwrite-index],[data-lookup-create-details]')) { e.preventDefault(); focusIndex(Number(e.currentTarget.dataset.focusIndex)); } }); });
   document.querySelectorAll('[data-overwrite-index]').forEach(b => { b.addEventListener('click', e => { e.stopPropagation(); overwriteSkipped(Number(e.currentTarget.dataset.overwriteIndex)); }); b.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); overwriteSkipped(Number(e.currentTarget.dataset.overwriteIndex)); } }); });
   document.querySelectorAll('[data-delete-step]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); state.draft.steps.splice(Number(e.currentTarget.dataset.deleteStep), 1); state.draft.steps.forEach((s, i) => s.sequence = i + 1); render(); }));
+  document.querySelectorAll('[data-delete-workflow-child]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); const [parentIndex, childIndex] = String(e.currentTarget.dataset.deleteWorkflowChild || '').split(':').map(Number); const workflow = lookupCreateWorkflow(state.draft?.steps?.[parentIndex]); if (!workflow || !Number.isInteger(childIndex) || childIndex < 0 || childIndex >= workflow.fields.length) return; workflow.fields.splice(childIndex, 1); workflow.fields.forEach((step, i) => step.sequence = i + 1); render(); }));
 }
 
+function saveEditedStepValue(step,key){
+  const t=fieldTypeLabel(step);
+  const bool=document.querySelector(`[data-edit-bool="${key}"]`);
+  if(bool){step.value=bool.checked;return;}
+  if(t==='Multipicklist'&&typeOptions(step).length){step.value=[...document.querySelectorAll(`[data-multi-index="${key}"]:checked`)].map(x=>x.dataset.multiValue).filter(Boolean);return;}
+  if(t==='Address'){const old=step.value&&typeof step.value==='object'?step.value:{};const next={...old};document.querySelectorAll(`[data-address-edit-part="${key}"]`).forEach(input=>{const part=input.dataset.addressPart;const aliases=part==='province'?['province','state','State']:part==='postalCode'?['postalCode','PostalCode','postalcode']:part==='street'?['street','Street']:part==='city'?['city','City']:part==='country'?['country','Country']:[part];const existing=aliases.find(alias=>Object.prototype.hasOwnProperty.call(old,alias));next[existing||part]=String(input.value||'').trim();});step.value=next;return;}
+  const el=document.querySelector(`[data-edit-value="${key}"]`);
+  if(!el)return;
+  if(t==='Date'){
+    const recordingDate=step.meta?.dateRecordedOn||state.draft?.recordingDate||localDateISO();
+    if(step.meta?.dateMode==='relative'&&Number.isFinite(Number(step.meta?.dateOffsetDays))){
+      const sign=document.querySelector(`[data-date-sign="${key}"]`)?.value==='-'?-1:1;const days=Math.max(0,Number(document.querySelector(`[data-date-offset="${key}"]`)?.value||0));const relativeOffset=sign*days;
+      step.value=shiftDateFrom(recordingDate,relativeOffset);step.meta={...(step.meta||{}),dateRecordedOn:recordingDate,dateOffsetDays:relativeOffset,dateExpression:dateOffsetLabel(relativeOffset),dateMode:'relative'};
+    }else{const input=String(el.value||'').trim();step.value=input.replace(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/,'$3-$1-$2');if(step.meta){delete step.meta.dateExpression;delete step.meta.dateOffsetDays;delete step.meta.dateMode;}}
+  }else if(t==='Picklist'&&String(el.tagName||'').toLowerCase()==='select'){
+    const selected=el.selectedOptions?.[0]||el.options?.[el.selectedIndex];const label=String(selected?.textContent||selected?.label||'').trim();step.value=label;step.meta={...(step.meta||{}),selectedDisplayValue:label};
+  }else if(t==='Lookup'){
+    const displayValue=String(el.value||'').trim();const old=step.value&&typeof step.value==='object'?step.value:{};const oldLabel=String(old.displayValue||'').trim();
+    step.value={displayValue,recordId:displayValue===oldLabel?String(old.recordId||''):''};step.meta={...(step.meta||{}),lookupDisplayValue:displayValue,lookupRecordId:step.value.recordId};
+  }else step.value=cleanEditedValue(step,el.value);
+}
 async function saveInline({ renderAfter = true } = {}) {
-  if (!state.draft) return;
-  state.draft.steps.forEach((s, i) => {
-    const t = fieldTypeLabel(s);
-    const bool = document.querySelector(`[data-edit-bool="${i}"]`);
-    if (bool) {
-      s.value = bool.checked;
-    } else if (t === 'Multipicklist' && typeOptions(s).length) {
-      s.value = [...document.querySelectorAll(`[data-multi-index="${i}"]:checked`)]
-        .map(x => x.dataset.multiValue).filter(Boolean);
-    } else {
-      const el = document.querySelector(`[data-edit-value="${i}"]`);
-      if (!el) return;
-      if (t === 'Date') {
-        const recordingDate = s.meta?.dateRecordedOn || state.draft?.recordingDate || localDateISO();
-        if (s.meta?.dateMode === 'relative' && Number.isFinite(Number(s.meta?.dateOffsetDays))) {
-          const sign = document.querySelector(`[data-date-sign="${i}"]`)?.value === '-' ? -1 : 1;
-          const days = Math.max(0, Number(document.querySelector(`[data-date-offset="${i}"]`)?.value || 0));
-          const relativeOffset = sign * days;
-          s.value = shiftDateFrom(recordingDate, relativeOffset);
-          s.meta = { ...(s.meta || {}), dateRecordedOn: recordingDate, dateOffsetDays: relativeOffset, dateExpression: dateOffsetLabel(relativeOffset), dateMode: 'relative' };
-        } else {
-          const input = String(el.value || '').trim();
-          const normalized = input.replace(/^(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})$/, '$3-$1-$2');
-          s.value = normalized;
-          if (s.meta) { delete s.meta.dateExpression; delete s.meta.dateOffsetDays; delete s.meta.dateMode; }
+  if(!state.draft)return;
+  for (let index=0; index<state.draft.steps.length; index++) {
+    const step=state.draft.steps[index];
+    saveEditedStepValue(step,index);
+    const randomConfig=readRandomizationFromDOM(step,String(index),{context:'edit'});
+    if(randomConfig.enabled&&randomConfig.strategy==='lookupCreate'){
+      setRandomizationError([...document.querySelectorAll('[data-randomization-editor]')].find(el=>el.dataset.randKey===String(index)&&el.dataset.randContext==='edit'),'This lookup already uses its captured Create New workflow. Randomize the new-record fields below, or choose “Random existing record”.');
+      showInline(`${step.target?.label||'Lookup'}: randomize the new-record fields below or choose Random existing record.`);return;
+    }
+    const validation=randomConfig.enabled?(randomizerCore()?.validate?.(step,randomConfig)||{ok:true}):{ok:true};
+    if(!validation.ok){setRandomizationError([...document.querySelectorAll('[data-randomization-editor]')].find(el=>el.dataset.randKey===String(index)&&el.dataset.randContext==='edit'),validation.error);showInline(`${step.target?.label||'Field'}: ${validation.error}`);return;}
+    step.randomization=randomConfig;
+    const workflow=lookupCreateWorkflow(step);
+    if(workflow){
+      const typeEditor=document.querySelector(`[data-edit-record-type="${index}"]`);
+      if(typeEditor)workflow.recordTypeLabel=String(typeEditor.value||'').trim();
+      if(!workflow.recordTypeLabel)workflow.recordTypeLabel='';
+      for(let childIndex=0;childIndex<(workflow.fields||[]).length;childIndex++){
+        const child=workflow.fields[childIndex], childKey=`wf-${index}-${childIndex}`;
+        saveEditedStepValue(child,childKey);
+        const childConfig=readRandomizationFromDOM(child,childKey,{context:'edit'});
+        if(childConfig.enabled&&childConfig.strategy==='lookupCreate'){
+          setRandomizationError([...document.querySelectorAll('[data-randomization-editor]')].find(el=>el.dataset.randKey===childKey&&el.dataset.randContext==='edit'),'This lookup already uses its captured Create New workflow. Randomize the new-record fields below, or choose “Random existing record”.');
+          showInline(`${child.target?.label||'Lookup'}: randomize the new-record fields below or choose Random existing record.`);return;
         }
-      } else {
-        s.value = cleanEditedValue(s, el.value);
+        const childValidation=childConfig.enabled?(randomizerCore()?.validate?.(child,childConfig)||{ok:true}):{ok:true};
+        if(!childValidation.ok){setRandomizationError([...document.querySelectorAll('[data-randomization-editor]')].find(el=>el.dataset.randKey===childKey&&el.dataset.randContext==='edit'),childValidation.error);showInline(`${child.target?.label||'Field'}: ${childValidation.error}`);return;}
+        child.randomization=childConfig;child.sequence=childIndex+1;
       }
     }
-    s.sequence = i + 1;
-  });
-  state.draft.name = document.getElementById('recordingName')?.value.trim() || state.draft.name || recordingTitle(state.draft);
-  state.draft.updatedAt = new Date().toISOString();
-  state.recordings[state.draft.id] = clone(state.draft);
-  await saveRecordings(state.recordings);
-  state.editing = false;
-  state.draft = null;
-  if (renderAfter) render();
+    step.sequence=index+1;
+  }
+  state.draft.name=document.getElementById('recordingName')?.value.trim()||state.draft.name||recordingTitle(state.draft);
+  state.draft.updatedAt=new Date().toISOString();state.recordings[state.draft.id]=clone(state.draft);await saveRecordings(state.recordings);state.editing=false;state.draft=null;if(renderAfter)render();
+}
+
+async function toggleSidepanelTheme() {
+  const settings = await getSettings();
+  state.darkMode = !(settings.darkMode === true);
+  applyTheme(state.darkMode);
+  await saveSettings({ ...settings, darkMode: state.darkMode });
 }
 
 async function refresh() {
@@ -1260,12 +2120,19 @@ async function refresh() {
     const win = await chrome.windows.getCurrent().catch(() => ({ id: null, incognito: false }));
     const windowId = win?.id ?? tab?.windowId ?? null;
     const incognito = !!(win?.incognito ?? tab?.incognito);
-    const [recs, settings, active, lock, testingSession] = await Promise.all([
+    let testingUiState = null;
+    try {
+      const storedUi = await chrome.storage.local.get(TESTING_UI_STATE_KEY);
+      testingUiState = storedUi?.[TESTING_UI_STATE_KEY] || null;
+    } catch {}
+    const currentTestingSessionId = state.testingSession?.id || testingUiState?.sessionId || null;
+    const [recs, settings, active, lock, testingSessions, restoredTestingSession] = await Promise.all([
       getRecordings(),
       getSettings(),
       chrome.runtime.sendMessage({ type:'GET_ACTIVE_CONTEXT' }).catch(() => ({})),
       chrome.runtime.sendMessage({ type:'GET_RECORDING_LOCK', windowId, incognito }).catch(() => ({})),
-      loadTestingSession().catch(() => null)
+      loadTestingSessionSummaries().catch(() => []),
+      currentTestingSessionId ? loadTestingSessionById(currentTestingSessionId).catch(() => null) : Promise.resolve(null)
     ]);
     state.recordings = recs || {};
     state.tabId = active?.tabId || tab?.id || null;
@@ -1296,10 +2163,19 @@ async function refresh() {
     state.recordingTabId = lock?.recordingTabId ?? null;
     state.recording = !!(state.recordingTabId && state.recordingTabId === state.tabId);
     state.recordingPaused = false;
-    state.testingSession = testingSession || null;
-    if (state.testingSession) await loadTestingEvidenceUrls();
+    state.testingSessions = Array.isArray(testingSessions) ? testingSessions : [];
+    state.testingSession = restoredTestingSession || null;
+    if (state.testingSession) {
+      state.testingActiveCaseId = state.testingSession.currentEvidenceTestCaseId || state.testingSession.testCases?.[0]?.id || null;
+      const summary = summarizeTestingSession(state.testingSession);
+      state.testingSessions = state.testingSessions.filter(item => item.id !== state.testingSession.id);
+      if (summary) state.testingSessions.unshift(summary);
+      await loadTestingEvidenceUrls();
+    }
+    state.testingUiHydrated = true;
     state.fillEmptyOnly = settings.fillEmptyOnly !== false;
-    applyTheme(settings.darkMode);
+    state.darkMode = settings.darkMode === true;
+    applyTheme(state.darkMode);
     if (tab?.id) {
       const d = await chrome.tabs.sendMessage(tab.id, { type:'GET_RECORDING_STATE' }).catch(() => null);
       if (d?.recording) {
@@ -1327,8 +2203,10 @@ async function refresh() {
       state.view = 'save-name';
     } else if (state.recording) {
       state.view = 'recording';
-    } else if (String(state.view || '').startsWith('testing-') && state.testingSession) {
-      // Preserve the active Testing view during a refresh.
+    } else if (state.testingSession && String(testingUiState?.view || '').startsWith('testing-')) {
+      state.view = ['testing-workspace','testing-summary','testing-preview'].includes(testingUiState.view) ? testingUiState.view : 'testing-workspace';
+    } else if (testingUiState?.view === 'testing-dashboard') {
+      state.view = 'testing-dashboard';
     } else {
       state.selectedId = null;
       state.run = null;
@@ -1337,6 +2215,11 @@ async function refresh() {
       state.draft = null;
       state.filter = '';
       state.view = 'home';
+    }
+    // Side-panel instances are recreated when the panel is closed/reopened.
+    // Restore evidence expanded on every entry to an evidence-only session.
+    if (state.view === 'testing-workspace' && state.testingSession && isEvidenceOnlyTesting(state.testingSession)) {
+      state.testingGeneralEvidenceExpanded = true;
     }
   } finally {
     state.refreshing = false;
@@ -1354,7 +2237,16 @@ async function ensureTabConnection(tab) {
   if (existing) return { ok: true, context: existing.context || null, existing: true };
   return chrome.runtime.sendMessage({ type: 'ENSURE_CONTENT_SCRIPTS', tabId: tab.id }).catch(e => ({ ok: false, message: e?.message || 'Could not connect to Salesforce.' }));
 }
-async function sendTab(tab, msg) { let r = await chrome.tabs.sendMessage(tab.id, msg).catch(() => null); if (r) return r; const ready = await ensureTabConnection(tab); if (!ready?.ok) return { ok: false, message: ready?.message || 'Could not connect to Salesforce.' }; return chrome.tabs.sendMessage(tab.id, msg).catch(e => ({ ok: false, message: e?.message || 'Could not connect to Salesforce.' })); }
+const MULTIFRAME_REQUEST_TYPES=new Set(['GET_RECORDING_STATE','START_RECORDING','STOP_RECORDING','PAUSE_RECORDING','RESUME_RECORDING','CLEAR_PENDING_RECORDING','REMOVE_RECORDING_STEP','UPDATE_RECORDING_STEP_RANDOMIZATION','REPLAY_RECORDING','OVERWRITE_STEP','FOCUS_FIELD','GET_FIELD_DESCRIPTORS']);
+async function sendTab(tab,msg){
+  if(!tab?.id)return{ok:false,message:'Open a Salesforce page first.'};
+  if(MULTIFRAME_REQUEST_TYPES.has(msg?.type)){
+    return chrome.runtime.sendMessage({type:'FORCEPILOT_MULTIFRAME_REQUEST',tabId:tab.id,message:msg}).catch(e=>({ok:false,message:e?.message||'Could not communicate with Salesforce frames.'}));
+  }
+  let r=await chrome.tabs.sendMessage(tab.id,msg).catch(()=>null);if(r)return r;
+  const ready=await ensureTabConnection(tab);if(!ready?.ok)return{ok:false,message:ready?.message||'Could not connect to Salesforce.'};
+  return chrome.tabs.sendMessage(tab.id,msg).catch(e=>({ok:false,message:e?.message||'Could not connect to Salesforce.'}));
+}
 
 async function receivePendingRecording(recording, { auto = false, pendingSave = true, sourceTabId = null } = {}) {
   if (!recording?.id) return;
@@ -1387,7 +2279,7 @@ async function receivePendingRecording(recording, { auto = false, pendingSave = 
 async function clearPendingRecordingInTab(tabId) {
   const id = Number(tabId || 0);
   if (!id) return;
-  try { await chrome.tabs.sendMessage(id, { type: 'CLEAR_PENDING_RECORDING' }); } catch {}
+  try { await chrome.runtime.sendMessage({type:'FORCEPILOT_MULTIFRAME_REQUEST',tabId:id,message:{type:'CLEAR_PENDING_RECORDING'}}); } catch {}
 }
 
 async function savePendingRecording() {
@@ -1455,57 +2347,132 @@ async function startAddField() {
   // The Side Panel can retain the previous object's context while Salesforce
   // itself has already navigated to a different record in its SPA shell.
   const fresh = await sendTab(tab, { type: 'REFRESH_CONTEXT' });
-  if (!fresh?.objectApiName || fresh.objectApiName === 'Salesforce') return showInline('Could not determine the current Salesforce object. Refresh the Salesforce record and try again.');
+  if (!fresh?.objectApiName) return showInline('Could not read the Salesforce page context. Refresh the page and try again.');
   state.context = fresh;
-  if (recording.context?.objectApiName && fresh.objectApiName && recording.context.objectApiName !== fresh.objectApiName) {
-    return showInline(`This recording is for ${recording.context.objectApiName}. Open a matching Salesforce record first.`);
+  // Setup, Visualforce utilities, and Experience Cloud landing pages may have a
+  // generic Salesforce context rather than a concrete sObject. Only reject an
+  // append when both sides identify different concrete objects.
+  const existingObject = String(recording.context?.objectApiName || '').trim();
+  const currentObject = String(fresh.objectApiName || '').trim();
+  const isGenericObject = value => !value || value.toLowerCase() === 'salesforce';
+  if (!isGenericObject(existingObject) && !isGenericObject(currentObject) && existingObject.toLowerCase() !== currentObject.toLowerCase()) {
+    return showInline(`This recording is for ${existingObject}. Open a matching Salesforce record first.`);
   }
   const r = await sendTab(tab, { type: 'START_RECORDING', appendRecording: recording });
   if (!r?.ok) return showInline(r?.message || 'Could not start field recording.');
+  liveRecordingRevision++;
   state.recording = true;
   state.recordingTabId = tab.id;
   state.addingToRecordingId = recording.id;
   state.context = r.context || state.context;
-  state.activeSteps = r.steps || recording.steps || [];
+  state.activeSteps = [...(recording.steps||[]).map((step,index)=>({...clone(step),__fpExistingAppendStep:true,__fpExistingIndex:index})),...(r.steps||[])];
   state.run = null;
   state.view = 'recording';
   render();
   clearInterval(window.fpTimer);
   window.fpTimer = setGuardedInterval(async () => {
+    if(liveRecordingMutationInFlight||stopRecordingPromise)return;
+    const revision=liveRecordingRevision;
     const d = await sendTab(tab, { type:'GET_RECORDING_STATE' });
-    if (!d?.recording) return;
-    state.activeSteps = d.steps || state.activeSteps;
+    if (liveRecordingMutationInFlight||stopRecordingPromise||revision!==liveRecordingRevision || !d?.recording) return;
+    if(state.addingToRecordingId){
+      const baseSteps=(state.recordings[state.addingToRecordingId]?.steps||[]).map((step,index)=>({...clone(step),__fpExistingAppendStep:true,__fpExistingIndex:index}));
+      state.activeSteps=[...baseSteps,...(d.steps||[])];
+    }else state.activeSteps = d.steps || state.activeSteps;
     const list = document.getElementById('recording-field-list');
     if (list) {
-      list.innerHTML = renderLiveRecordingRows(state.activeSteps);
+      updateLiveRecordingList(list, state.activeSteps);
       const note = document.getElementById('recording-note');
       if (note) note.classList.toggle('is-hidden', state.activeSteps.length > 0);
-      list.querySelectorAll('[data-remove-live-step]').forEach(b=>b.addEventListener('click', async e=>{ e.stopPropagation(); await removeLiveRecordingStep(Number(e.currentTarget.dataset.removeLiveStep)); }));
     }
-  }, 900);
+   }, 300);
 }
 
 async function removeLiveRecordingStep(index) {
+  if(liveRecordingMutationInFlight)return;
+  liveRecordingMutationInFlight=true;
+  try{return await removeLiveRecordingStepImpl(index)}finally{liveRecordingMutationInFlight=false}
+}
+
+async function removeLiveRecordingStepImpl(index) {
   const tabId = state.recordingTabId;
   if (!tabId) return;
+  const selectedStep=state.activeSteps?.[index];
+  if(!selectedStep)return;
+  const previousActiveSteps=clone(state.activeSteps||[]);
+  liveRecordingRevision++;
+  // Remove immediately from the panel. Salesforce frame coordination can take
+  // longer than the local interaction, so do not make the user wait for a full
+  // cross-frame state refresh before the row disappears.
+  state.activeSteps.splice(index,1);
+  state.activeSteps=state.activeSteps.map((step,i)=>({...step,sequence:i+1}));
+  const immediateList=document.getElementById('recording-field-list');
+  if(immediateList){updateLiveRecordingList(immediateList,state.activeSteps);const note=document.getElementById('recording-note');if(note)note.classList.toggle('is-hidden',state.activeSteps.length>0);}
+  if(selectedStep?.__fpExistingAppendStep&&state.addingToRecordingId){
+    const existing=state.recordings[state.addingToRecordingId];
+    const removeAt=Number(selectedStep.__fpExistingIndex);
+    if(!existing||!Number.isInteger(removeAt)||removeAt<0||removeAt>=existing.steps.length){
+      state.activeSteps=previousActiveSteps;render();return;
+    }
+    const previousRecording=clone(existing);
+    existing.steps.splice(removeAt,1);existing.steps=existing.steps.map((step,i)=>({...step,sequence:i+1}));existing.updatedAt=new Date().toISOString();
+    try{await saveRecordings(state.recordings)}catch(error){state.recordings[state.addingToRecordingId]=previousRecording;state.activeSteps=previousActiveSteps;render();showInline(error?.message||'Could not remove the recorded field.');return}
+    liveRecordingRevision++;
+    const newSteps=previousActiveSteps.filter((step,i)=>i!==index&&!step.__fpExistingAppendStep).map((step,i)=>({...step,sequence:existing.steps.length+i+1}));
+    state.activeSteps=[...existing.steps.map((step,i)=>({...clone(step),__fpExistingAppendStep:true,__fpExistingIndex:i})),...newSteps];render();return;
+  }
   const tab = await chrome.tabs.get(tabId).catch(() => null);
-  if (!tab?.id) return;
-  const r = await sendTab(tab, { type: 'REMOVE_RECORDING_STEP', index });
-  if (!r?.ok) return showInline(r?.message || 'Could not remove the field from the recording.');
-  state.activeSteps = r.steps || [];
+  if (!tab?.id) { liveRecordingRevision++; state.activeSteps=previousActiveSteps; render(); return; }
+  const r = await sendTab(tab, { type: 'REMOVE_RECORDING_STEP', index, localIndex:selectedStep?.__fpFrameStepIndex??index, storageFrameId:selectedStep?.__fpStorageFrameId??0, frameId:selectedStep?.frame?.frameId, frame:selectedStep?.frame, stepId:selectedStep?.id||selectedStep?.meta?.recordedAt });
+  liveRecordingRevision++;
+  if (!r?.ok) { state.activeSteps=previousActiveSteps; render(); return showInline(r?.message || 'Could not remove the field from the recording.'); }
+  // The background now acknowledges the targeted-frame delete directly instead
+  // of waiting for a full cross-frame refresh. Reconcile from our pre-delete
+  // snapshot so the rest of the visible fields and their identities are retained.
+  const remainingSteps=previousActiveSteps.filter((step,i)=>i!==index);
+  if(state.addingToRecordingId){
+    const base=(state.recordings[state.addingToRecordingId]?.steps||[]).map((step,i)=>({...clone(step),__fpExistingAppendStep:true,__fpExistingIndex:i,sequence:i+1}));
+    const newSteps=remainingSteps.filter(step=>!step.__fpExistingAppendStep).map((step,i)=>({...step,sequence:base.length+i+1}));
+    state.activeSteps=[...base,...newSteps];
+  }else state.activeSteps=remainingSteps.map((step,i)=>({...step,sequence:i+1}));
   render();
 }
 
+
+function scheduleTestingUiStateSave() {
+  if (!state.testingUiHydrated) return;
+  clearTimeout(testingUiSaveTimer);
+  testingUiSaveTimer = setTimeout(() => {
+    const isTestingView = String(state.view || '').startsWith('testing-');
+    const payload = isTestingView ? { view: state.view, sessionId: state.testingSession?.id || null } : { view: 'home', sessionId: null };
+    chrome.storage.local.set({ [TESTING_UI_STATE_KEY]: payload }).catch(() => {});
+  }, 120);
+}
+
+async function openTestingDashboard() {
+  state.testingPasteError = '';
+  state.testingShowAllSessions = false;
+  state.testingStatusMenuId = null;
+  state.testingNoteOpenId = null;
+  state.testingAutofillPickerOpen = false;
+  state.testingAutofillQuery = '';
+  state.testingAutofillActive = false;
+  state.testingAutofillBusy = false;
+  state.view = 'testing-dashboard';
+  await maybeShowTestingFirstRunTour();
+  render();
+}
 
 async function startNewTestingSession() {
   if (state.recording) {
     return showInline('Stop the active recording before starting Testing Mode.');
   }
-  if (state.testingSession) { state.testingLifecycleDialog = true; render(); return; }
   state.testingPasteText = '';
   state.testingPasteError = '';
   state.testingMessage = '';
   state.testingAssociatingEvidenceId = null;
+  state.testingStatusMenuId = null;
+  state.testingNoteOpenId = null;
   state.testingAutofillPickerOpen = false;
   state.testingAutofillQuery = '';
   state.testingAutofillActive = false;
@@ -1514,25 +2481,10 @@ async function startNewTestingSession() {
   state.testingExpandedEvidence = new Set();
   state.testingGeneralEvidenceExpanded = false;
   state.testingOpenMenu = null;
+  state.testingSessionNameEditing = false;
+  state.testingEditingExistingSession = false;
   state.view = 'testing-paste';
   render();
-}
-
-function closeTestingLifecycleDialog() { state.testingLifecycleDialog = false; render(); document.getElementById('startTesting')?.focus(); }
-
-async function discardAndStartTesting() {
-  const session = state.testingSession;
-  const name = session?.workProduct || 'Screenshot session';
-  const captures = session?.evidence?.length || 0;
-  const confirmed = await requestTestingConfirm({
-    title: 'Discard Testing session?',
-    message: `Discard “${name}” and its ${captures} capture${captures === 1 ? '' : 's'}? This permanently deletes the saved evidence before starting a new session.`,
-    confirmLabel: 'Discard session',
-    danger: true
-  });
-  if (!confirmed) return;
-  await discardTestingSession();
-  await startNewTestingSession();
 }
 
 async function startEvidenceOnlyTestingSession() {
@@ -1547,6 +2499,8 @@ async function createAndStartEvidenceOnlySession(name) {
   state.testingPasteError = '';
   state.testingMessage = '';
   state.testingAssociatingEvidenceId = null;
+  state.testingStatusMenuId = null;
+  state.testingNoteOpenId = null;
   state.testingAutofillPickerOpen = false;
   state.testingAutofillQuery = '';
   state.testingAutofillActive = false;
@@ -1555,22 +2509,42 @@ async function createAndStartEvidenceOnlySession(name) {
   state.testingExpandedEvidence = new Set();
   state.testingGeneralEvidenceExpanded = true;
   state.testingOpenMenu = null;
+  state.testingSessionNameEditing = false;
+  state.testingEditingExistingSession = false;
   state.testingSession = createEvidenceOnlyTestingSession();
-  state.testingSession.workProduct = String(name || '').trim();
+  state.testingSession.sessionName = String(name || '').trim();
+  state.testingSession.exportFilename = String(name || '').trim();
   resetTestingExportState();
   await persistTestingSession();
   state.view = 'testing-workspace';
   render();
 }
 
-async function resumeTestingSession() {
-  const saved = state.testingSession || await loadTestingSession().catch(() => null);
-  if (!saved) return startNewTestingSession();
+async function openTestingSession(sessionId) {
+  const previousSessionId = state.testingSession?.id || null;
+  const saved = await loadTestingSessionById(sessionId).catch(() => null);
+  if (!saved) {
+    await refresh();
+    return;
+  }
+  if (saved.status === 'finished') saved.status = 'active';
+  if (previousSessionId && previousSessionId !== saved.id) {
+    const previous = state.testingSessions.find(session => session.id === previousSessionId);
+    for (const evidence of previous?.evidence || []) revokeTestingObjectUrl(evidence.id);
+  }
   state.testingSession = saved;
-  if (saved.status === 'finished') { saved.status = 'active'; await persistTestingSession(); }
+  state.testingActiveCaseId = saved.currentEvidenceTestCaseId || saved.testCases?.[0]?.id || null;
+  if (!isEvidenceOnlyTesting(saved)) saved.currentEvidenceTestCaseId = state.testingActiveCaseId;
+  const existingIndex = (state.testingSessions || []).findIndex(session => session.id === saved.id);
+  const summary = summarizeTestingSession(saved);
+  if (existingIndex >= 0) state.testingSessions[existingIndex] = summary;
+  else state.testingSessions = [summary, ...(state.testingSessions || [])];
+  await persistTestingSession();
   await loadTestingEvidenceUrls();
   state.testingPasteError = '';
   state.testingAssociatingEvidenceId = null;
+  state.testingStatusMenuId = null;
+  state.testingNoteOpenId = null;
   state.testingAutofillPickerOpen = false;
   state.testingAutofillQuery = '';
   state.testingAutofillActive = false;
@@ -1578,8 +2552,34 @@ async function resumeTestingSession() {
   state.testingCollapsedCases = new Set();
   state.testingExpandedEvidence = new Set();
   state.testingGeneralEvidenceExpanded = isEvidenceOnlyTesting(saved);
+  state.testingSessionNameEditing = false;
+  state.testingEditingExistingSession = false;
   state.testingOpenMenu = null;
   state.view = 'testing-workspace';
+  if (!testingSessionName(saved)) {
+    render();
+    openEvidenceNameDialog('name-existing-session', '');
+    return;
+  }
+  render();
+}
+
+async function resumeTestingSession(sessionId) {
+  const id = sessionId || state.testingSession?.id;
+  if (!id) return startNewTestingSession();
+  await openTestingSession(id);
+}
+
+function exitTestingToDashboard() {
+  state.testingPasteError = '';
+  state.testingAssociatingEvidenceId = null;
+  state.testingStatusMenuId = null;
+  state.testingNoteOpenId = null;
+  state.testingAutofillPickerOpen = false;
+  state.testingAutofillQuery = '';
+  state.testingAutofillActive = false;
+  state.testingAutofillBusy = false;
+  state.view = 'testing-dashboard';
   render();
 }
 
@@ -1594,226 +2594,131 @@ function exitTestingToHome() {
   render();
 }
 
-function autoResizeTestingTextareas() {
-  document.querySelectorAll('.testing-editor-step-field textarea').forEach(textarea => {
-    textarea.style.height = 'auto';
-    textarea.style.height = `${Math.max(42, textarea.scrollHeight)}px`;
-  });
-}
-
 function toggleTestingCase(caseId) {
-  if (!caseId) return;
+  if (!caseId || !state.testingSession?.testCases?.some(tc => tc.id === caseId)) return;
   if (state.testingCollapsedCases.has(caseId)) state.testingCollapsedCases.delete(caseId);
   else state.testingCollapsedCases.add(caseId);
-  state.testingOpenMenu = null;
-  render();
-}
-
-function toggleTestingEvidence(stepId) {
-  if (!stepId) return;
-  if (state.testingExpandedEvidence.has(stepId)) state.testingExpandedEvidence.delete(stepId);
-  else state.testingExpandedEvidence.add(stepId);
-  render();
-}
-
-function addTestingStep(tcId) {
-  const tc = state.testingSession?.testCases?.find(item => item.id === tcId);
-  if (!tc) return;
-  const nextIndex = (tc.steps || []).length ? Math.max(...tc.steps.map(s => Number(s.index) || 0)) + 1 : 1;
-  const stepId = `step_${crypto.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
-  tc.steps.push({ id: stepId, index: nextIndex, text: '' });
-  state.testingCollapsedCases.delete(tcId);
-  state.testingOpenMenu = null;
-  persistTestingSession().catch(() => {});
-  render();
-  requestAnimationFrame(() => document.querySelector(`textarea[data-testing-field="stepText"][data-tc-id="${CSS.escape(tcId)}"][data-step-id="${CSS.escape(stepId)}"]`)?.focus());
-}
-
-function addTestingCase() {
-  const cases = state.testingSession?.testCases || [];
-  const tcId = `tc_${crypto.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
-  const stepId = `step_${crypto.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
-  const tc = {
-    id: tcId,
-    workProduct: state.testingSession?.workProduct || '',
-    objectType: cases[0]?.objectType || 'Test Case',
-    title: `TC_${cases.length + 1}: New test case`,
-    steps: [{ id: stepId, index: 1, text: '' }]
-  };
-  state.testingSession.testCases.push(tc);
-  state.testingCollapsedCases.delete(tcId);
-  state.testingOpenMenu = null;
-  persistTestingSession().catch(() => {});
-  render();
-  requestAnimationFrame(() => document.querySelector(`input[data-testing-field="title"][data-tc-id="${CSS.escape(tcId)}"]`)?.focus());
-}
-
-async function deleteTestingCase(tcId) {
-  const session = state.testingSession;
-  if (!session || session.testCases.length <= 1) return;
-  const tc = session.testCases.find(item => item.id === tcId);
-  if (!tc) return;
-  const confirmed = await requestTestingConfirm({
-    title: 'Delete test case?',
-    message: `Delete ${tc.title || 'this test case'}? Its linked evidence will also be removed.`,
-    confirmLabel: 'Delete test case',
-    danger: true
-  });
-  if (!confirmed) return;
-  const stepIds = new Set((tc.steps || []).map(step => step.id));
-  const toDelete = session.evidence.filter(item => stepIds.has(item.stepId));
-  session.testCases = session.testCases.filter(item => item.id !== tcId);
-  session.evidence = session.evidence.filter(item => !stepIds.has(item.stepId));
-  toDelete.forEach(item => { revokeTestingObjectUrl(item.id); deleteEvidenceBlob(item.imageBlobKey).catch(() => {}); });
-  state.testingCollapsedCases.delete(tcId);
-  state.testingOpenMenu = null;
-  if (stepIds.has(session.currentEvidenceStepId)) session.currentEvidenceStepId = null;
-  persistTestingSession().catch(() => {});
-  render();
-}
-
-async function deleteTestingStep(tcId, stepId) {
-  const session = state.testingSession;
-  const tc = session?.testCases?.find(item => item.id === tcId);
-  if (!tc || tc.steps.length <= 1) return;
-  const confirmed = await requestTestingConfirm({
-    title: 'Delete test step?',
-    message: 'Delete this step? Evidence linked to it will become unassociated.',
-    confirmLabel: 'Delete step',
-    danger: true
-  });
-  if (!confirmed) return;
-  tc.steps = tc.steps.filter(step => step.id !== stepId);
-  tc.steps.forEach((step, index) => { step.index = index + 1; });
-  session.evidence.forEach(item => {
-    if (item.stepId === stepId) { item.stepId = null; item.testCaseId = null; }
-  });
-  if (session.currentEvidenceStepId === stepId) session.currentEvidenceStepId = null;
+  state.testingActiveCaseId = caseId;
+  state.testingSession.currentEvidenceTestCaseId = caseId;
   state.testingOpenMenu = null;
   persistTestingSession().catch(() => {});
   render();
 }
 
-function moveTestingStep(tcId, stepId, direction) {
-  const tc = state.testingSession?.testCases?.find(item => item.id === tcId);
-  if (!tc) return;
-  const index = tc.steps.findIndex(step => step.id === stepId);
-  if (index < 0) return;
-  const next = direction === 'up' ? index - 1 : index + 1;
-  if (next < 0 || next >= tc.steps.length) return;
-  [tc.steps[index], tc.steps[next]] = [tc.steps[next], tc.steps[index]];
-  tc.steps.forEach((step, i) => { step.index = i + 1; });
-  state.testingOpenMenu = null;
-  persistTestingSession().catch(() => {});
+function expandTestingAll() {
+  state.testingCollapsedCases = new Set();
   render();
 }
 
-function expandTestingAll() { state.testingCollapsedCases = new Set(); render(); }
-function collapseTestingAll() { state.testingCollapsedCases = new Set((state.testingSession?.testCases || []).map(tc => tc.id)); render(); }
-
-function testingDismissOpenMenu(event) {
-  if (!state.testingOpenMenu) return;
-  if (event.target.closest('.testing-context-menu') || event.target.closest('[data-testing-case-menu]') || event.target.closest('[data-testing-step-menu]')) return;
-  state.testingOpenMenu = null;
-  if (String(state.view || '').startsWith('testing-')) render();
+function collapseTestingAll() {
+  state.testingCollapsedCases = new Set((state.testingSession?.testCases || []).map(tc => tc.id));
+  render();
 }
 
 function handleTestingEditorInput(event) {
   const el = event.currentTarget;
-  const field = el.dataset.testingField;
-  const tc = state.testingSession?.testCases?.find(item => item.id === el.dataset.tcId);
-  if (!field || !state.testingSession) return;
-  if (!tc && !['workProduct', 'globalObjectType'].includes(field)) return;
-  if (field === 'workProduct') {
-    state.testingSession.workProduct = String(el.value || '').trim();
-    state.testingSession.testCases.forEach(item => { item.workProduct = state.testingSession.workProduct; });
-  } else if (field === 'globalObjectType') {
-    const value = String(el.value || '').trim() || 'Test Case';
-    state.testingSession.testCases.forEach(item => { item.objectType = value; });
-  } else if (field === 'objectType') {
-    const value = String(el.value || '').trim() || 'Test Case';
-    if (el.dataset.testingGlobal === 'true') {
-      state.testingSession.testCases.forEach(item => { item.objectType = value; });
-    } else {
-      tc.objectType = value;
-    }
+  const field = el?.dataset?.testingField;
+  const session = state.testingSession;
+  if (!field || !session) return;
+  if (field === 'sessionName') {
+    const nextName = String(el.value || '').trim();
+    session.sessionName = nextName;
+    session.exportFilename = nextName;
+  } else if (field === 'workProduct') {
+    session.workProduct = String(el.value || '').trim();
   } else if (field === 'title') {
-    tc.title = String(el.value || '').trim();
-  } else if (field === 'stepIndex') {
-    const step = tc.steps.find(item => item.id === el.dataset.stepId);
-    if (step) step.index = Math.max(1, Number(el.value) || 1);
-  } else if (field === 'stepText') {
-    const step = tc.steps.find(item => item.id === el.dataset.stepId);
-    if (step) step.text = String(el.value || '');
+    const tc = session.testCases?.find(item => item.id === el.dataset.tcId);
+    if (!tc) return;
+    // Preserve the user's full title; trimming is only used for validation.
+    tc.title = String(el.value ?? '');
+  } else {
+    return;
   }
   persistTestingSession().catch(() => {});
+}
+
+async function saveTestingSessionNameInline() {
+  const session = state.testingSession;
+  const input = document.getElementById('testingSessionNameInline');
+  const name = String(input?.value || '').trim().replace(/\.(?:docx|zip)$/i, '');
+  if (!session || !name) {
+    showToast('Enter a session name.', { type: 'warning', duration: 2300 });
+    input?.focus();
+    return;
+  }
+  session.sessionName = name;
+  session.exportFilename = name;
+  state.testingSessionNameEditing = false;
+  await persistTestingSession();
+  render();
+  showToast('Session name updated', { type: 'success', duration: 1500 });
 }
 
 function validateTestingSessionForStart() {
   const session = state.testingSession;
   if (isEvidenceOnlyTesting(session)) return '';
-  if (!session?.workProduct?.trim()) return 'Work Product is required.';
-  if (!session.testCases?.length) return 'Add at least one test case.';
-  for (const tc of session.testCases) {
-    if (!tc.title?.trim()) return 'Every test case needs a title.';
-    if (!tc.steps?.length) return `${tc.title || 'A test case'} does not contain any steps.`;
-    for (const step of tc.steps) {
-      if (!Number.isInteger(Number(step.index)) || Number(step.index) < 1) return `${tc.title}: Step Index must be a positive whole number.`;
-      if (!String(step.text || '').trim()) return `${tc.title}: every step needs text.`;
-    }
-  }
+  if (!session?.testCases?.length) return 'Add at least one scenario.';
+  if (session.testCases.some(tc => !String(tc.title ?? '').trim())) return 'Every scenario needs a title.';
   return '';
 }
 
-function downloadTestingTemplate() {
-  const templatePath = 'src/test-scenarios-template.xlsx';
-  fetch(chrome.runtime.getURL(templatePath))
-    .then(response => {
-      if (!response.ok) throw new Error(`Template unavailable (${response.status}).`);
-      return response.blob();
-    })
-    .then(blob => {
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = 'test-scenarios-template.xlsx';
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    })
-    .catch(() => showInline('The Excel template could not be downloaded. Please refresh ForcePilot and try again.'));
-}
-
 async function parseTestingPasteAndPreview() {
-  const value = String(document.getElementById('testingPaste')?.value || state.testingPasteText || '').trim();
+  const value = String(document.getElementById('testingPaste')?.value ?? state.testingPasteText ?? '');
   state.testingPasteText = value;
   state.testingPasteError = '';
-  if (!value) {
-    state.testingPasteError = 'Paste your test cases first.';
+  if (!value.trim()) {
+    state.testingPasteError = 'Paste your scenarios first.';
     render();
     return;
   }
   try {
     const parsed = parseTestCasePaste(value);
-    state.testingSession = createTestingSession(parsed);
-    await persistTestingSession();
+    const session = createTestingSession(parsed);
+    session.sessionName = String(parsed.workProduct || '').trim();
+    session.exportFilename = '';
+    state.testingSession = session;
+    state.testingActiveCaseId = session.testCases?.[0]?.id || null;
+    session.currentEvidenceTestCaseId = state.testingActiveCaseId;
     state.testingAssociatingEvidenceId = null;
-    state.testingCollapsedCases = new Set(parsed.testCases.slice(1).map(tc => tc.id));
+    // Scenarios are expanded by default; users can collapse individual cards later.
+    state.testingCollapsedCases = new Set();
     state.testingExpandedEvidence = new Set();
     state.testingGeneralEvidenceExpanded = false;
     state.testingOpenMenu = null;
+    state.testingSessionNameEditing = false;
+    state.testingEditingExistingSession = false;
     resetTestingExportState();
     const settings = await getSettings();
-    if (settings.skipTestCaseReview !== false) {
-      await startTestingWorkspace();
+    const needsName = !String(parsed.workProduct || '').trim();
+    if (needsName) {
+      openEvidenceNameDialog('start-test-cases', '');
       return;
     }
+    if (settings.skipTestCaseReview) {
+      await continueImportedTestingSession();
+    } else {
+      await persistTestingSession();
+      state.view = 'testing-preview';
+      render();
+      requestAnimationFrame(() => autoResizeTestingTextareas());
+    }
+  } catch (error) {
+    state.testingPasteError = error?.message || 'Could not parse the pasted content.';
+    render();
+  }
+}
+
+async function continueImportedTestingSession() {
+  const session = state.testingSession;
+  if (!session) { state.view = 'testing-paste'; render(); return; }
+  const settings = await getSettings();
+  if (settings.skipTestCaseReview) {
+    await startTestingWorkspace();
+  } else {
+    await persistTestingSession();
     state.view = 'testing-preview';
     render();
-  } catch (error) {
-    state.testingPasteError = error?.message || 'Could not parse the test cases.';
-    render();
+    requestAnimationFrame(() => autoResizeTestingTextareas());
   }
 }
 
@@ -1825,157 +2730,188 @@ async function startTestingWorkspace() {
     return;
   }
   state.testingPasteError = '';
+  state.testingEditingExistingSession = false;
+  if (!isEvidenceOnlyTesting(state.testingSession)) {
+    const ids = new Set((state.testingSession?.testCases || []).map(tc => tc.id));
+    if (!ids.has(state.testingActiveCaseId)) state.testingActiveCaseId = state.testingSession?.testCases?.[0]?.id || null;
+    state.testingSession.currentEvidenceTestCaseId = state.testingActiveCaseId;
+  }
   await persistTestingSession();
   await loadTestingEvidenceUrls();
-  if (!state.testingCollapsedCases?.size && (state.testingSession.testCases || []).length > 1) state.testingCollapsedCases = new Set(state.testingSession.testCases.slice(1).map(tc => tc.id));
   state.testingOpenMenu = null;
   state.view = 'testing-workspace';
   render();
 }
 
-function testingToTsv(session) {
-  const rows = [['Work Product', 'Object Type', 'Test Case', 'Step Index', 'Steps']];
-  for (const tc of session?.testCases || []) {
-    for (const step of tc.steps || []) {
-      rows.push([
-        session.workProduct || '',
-        tc.objectType || 'Test Case',
-        tc.title || '',
-        Number(step.index) || '',
-        String(step.text || '')
-      ]);
-    }
+function addTestingCase() {
+  const session = state.testingSession;
+  if (!session || isEvidenceOnlyTesting(session)) return;
+  const tc = {
+    id: `tc_${crypto.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`,
+    title: 'New scenario',
+    status: 'not-marked',
+    statusSource: 'none'
+  };
+  session.testCases.push(tc);
+  state.testingActiveCaseId = tc.id;
+  session.currentEvidenceTestCaseId = tc.id;
+  state.testingCollapsedCases.delete(tc.id);
+  state.testingOpenMenu = null;
+  persistTestingSession().catch(() => {});
+  render();
+  requestAnimationFrame(() => {
+    const input = document.querySelector(`textarea[data-testing-field="title"][data-tc-id="${CSS.escape(tc.id)}"]`);
+    input?.focus();
+    input?.select();
+  });
+}
+
+async function deleteTestingCase(tcId) {
+  const session = state.testingSession;
+  const tc = session?.testCases?.find(item => item.id === tcId);
+  if (!session || !tc) return;
+  const confirmed = await requestTestingConfirm({
+    title: 'Remove scenario?',
+    message: `Remove “${tc.title || 'Untitled scenario'}”? Any associated screenshots will be kept and moved to Unassigned screenshots.`,
+    confirmLabel: 'Remove scenario',
+    danger: true
+  });
+  if (!confirmed) return;
+  session.testCases = session.testCases.filter(item => item.id !== tcId);
+  session.evidence.forEach(item => { if (item.testCaseId === tcId) item.testCaseId = null; });
+  state.testingCollapsedCases.delete(tcId);
+  if (state.testingActiveCaseId === tcId) state.testingActiveCaseId = session.testCases[0]?.id || null;
+  session.currentEvidenceTestCaseId = state.testingActiveCaseId;
+  state.testingOpenMenu = null;
+  await persistTestingSession();
+  render();
+}
+
+async function deleteResumableTestingSession(sessionId) {
+  const summary = (state.testingSessions || []).find(item => item.id === sessionId);
+  if (!summary) return;
+  const session = await loadTestingSessionById(sessionId).catch(() => null);
+  if (!session) return;
+  const name = testingSessionName(session) || 'Untitled testing session';
+  const captures = session.evidence?.length || 0;
+  const confirmed = await requestTestingConfirm({
+    title: 'Delete testing session?',
+    message: `Delete “${name}” and its ${captures} saved screenshot${captures === 1 ? '' : 's'}? This cannot be undone.`,
+    confirmLabel: 'Delete session',
+    danger: true
+  });
+  if (!confirmed) return;
+  await deleteTestingSession(session);
+  for (const evidence of session.evidence || []) revokeTestingObjectUrl(evidence.id);
+  state.testingSessions = (state.testingSessions || []).filter(item => item.id !== sessionId);
+  if (state.testingSession?.id === sessionId) state.testingSession = null;
+  render();
+}
+
+function testingDismissOpenMenu(event) {
+  let changed = false;
+  if (state.testingOpenMenu && !event.target?.closest?.('.testing-context-menu') && !event.target?.closest?.('[data-testing-case-menu]')) {
+    state.testingOpenMenu = null;
+    changed = true;
   }
-  return rows.map(row => row.map(value => String(value ?? '').replace(/\t/g, ' ').replace(/\r?\n/g, ' ')).join('\t')).join('\n');
-}
-
-function formatTestingEvidenceStamp(date = new Date()) {
-  const d = date instanceof Date ? date : new Date(date);
-  if (Number.isNaN(d.getTime())) return '';
-  const hour24 = d.getHours();
-  const hour12 = String(hour24 % 12 || 12);
-  const minute = String(d.getMinutes()).padStart(2, '0');
-  const period = hour24 >= 12 ? 'PM' : 'AM';
-  const dateLabel = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-  return { dateLabel, timeLabel: `${hour12}:${minute} ${period}` };
-}
-
-async function stampTestingEvidenceImage(blob, capturedAt = new Date()) {
-  if (!blob) return blob;
-  const stamp = formatTestingEvidenceStamp(capturedAt);
-  if (!stamp) return blob;
-  let bitmap = null;
-  let objectUrl = null;
-  try {
-    if (typeof createImageBitmap === 'function') {
-      bitmap = await createImageBitmap(blob);
-    } else {
-      objectUrl = URL.createObjectURL(blob);
-      bitmap = await new Promise((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => resolve(img);
-        img.onerror = () => reject(new Error('The screenshot could not be prepared.'));
-        img.src = objectUrl;
-      });
-    }
-
-    const width = Math.max(1, bitmap.width || bitmap.naturalWidth);
-    const height = Math.max(1, bitmap.height || bitmap.naturalHeight);
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d', { alpha: false });
-    if (!ctx) return blob;
-
-    ctx.drawImage(bitmap, 0, 0, width, height);
-
-    const scale = Math.max(1, Math.min(1.25, width / 1200));
-    const timeFontSize = 11;
-    const dateFontSize = 10;
-    const timeLineHeight = 13;
-    const dateLineHeight = 12;
-    const padX = 8;
-    const padY = 5;
-    const gap = 1;
-    const margin = 10;
-    ctx.textBaseline = 'middle';
-    ctx.textAlign = 'left';
-    ctx.font = `600 ${timeFontSize}px Inter, "Segoe UI", Arial, sans-serif`;
-    const timeWidth = ctx.measureText(stamp.timeLabel).width;
-    ctx.font = `500 ${dateFontSize}px Inter, "Segoe UI", Arial, sans-serif`;
-    const dateWidth = ctx.measureText(stamp.dateLabel).width;
-    const boxWidth = Math.ceil(Math.max(dateWidth, timeWidth) + padX * 2);
-    const boxHeight = Math.ceil(timeLineHeight + gap + dateLineHeight + padY * 2);
-    const boxX = Math.max(0, width - margin - boxWidth);
-    const boxY = Math.max(0, height - margin - boxHeight);
-    const radius = 7;
-
-    ctx.save();
-    ctx.shadowColor = 'rgba(15, 23, 42, 0.20)';
-    ctx.shadowBlur = 8;
-    ctx.shadowOffsetY = 2;
-    ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
-    ctx.beginPath();
-    ctx.roundRect(boxX, boxY, boxWidth, boxHeight, radius);
-    ctx.fill();
-    ctx.shadowColor = 'transparent';
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-
-    ctx.fillStyle = 'rgba(255,255,255,0.96)';
-    ctx.font = `600 ${timeFontSize}px Inter, "Segoe UI", Arial, sans-serif`;
-    ctx.fillText(stamp.timeLabel, boxX + padX, boxY + padY + timeLineHeight / 2);
-    ctx.fillStyle = 'rgba(255,255,255,0.78)';
-    ctx.font = `500 ${dateFontSize}px Inter, "Segoe UI", Arial, sans-serif`;
-    ctx.fillText(stamp.dateLabel, boxX + padX, boxY + padY + timeLineHeight + gap + dateLineHeight / 2);
-    ctx.restore();
-
-    return await new Promise(resolve => {
-      canvas.toBlob(result => resolve(result && result.size ? result : blob), 'image/jpeg', 0.98);
-    });
-  } catch {
-    return blob;
-  } finally {
-    bitmap?.close?.();
-    if (objectUrl) URL.revokeObjectURL(objectUrl);
+  if (state.testingStatusMenuId && !event.target?.closest?.('.testing-status-menu') && !event.target?.closest?.('[data-open-testing-status]')) {
+    state.testingStatusMenuId = null;
+    changed = true;
   }
+  if (changed && String(state.view || '').startsWith('testing-')) render();
 }
 
+function autoResizeTestingNote(textarea) {
+  if (!textarea) return;
+  textarea.style.height = '30px';
+  textarea.style.height = `${Math.min(120, Math.max(30, textarea.scrollHeight))}px`;
+  textarea.style.overflowY = textarea.scrollHeight > 120 ? 'auto' : 'hidden';
+}
 
+function openTestingNote(evidenceId) {
+  const evidence = state.testingSession?.evidence?.find(item => item.id === evidenceId);
+  if (!evidence) return;
+  state.testingNoteOpenId = state.testingNoteOpenId === evidenceId ? null : evidenceId;
+  render();
+  if (state.testingNoteOpenId) requestAnimationFrame(() => {
+    const input = document.querySelector(`[data-note-input="${CSS.escape(evidenceId)}"]`);
+    input?.focus();
+    autoResizeTestingNote(input);
+  });
+}
 
-async function saveTestingEvidenceBlob(inputBlob, { source = 'native', sourceTabId = null, stamp = false, toastMessage = 'Screenshot captured' } = {}) {
-  if (!state.testingSession || !inputBlob) return false;
-  const capturedAt = new Date();
-  const evidenceBlob = stamp ? await stampTestingEvidenceImage(inputBlob, capturedAt) : inputBlob;
+function closeTestingNote() {
+  state.testingNoteOpenId = null;
+  render();
+}
+
+async function saveTestingNote(evidenceId) {
+  const evidence = state.testingSession?.evidence?.find(item => item.id === evidenceId);
+  if (!evidence) return;
+  const input = document.querySelector(`[data-note-input="${CSS.escape(evidenceId)}"]`);
+  evidence.note = String(input?.value || '').trim() || null;
+  state.testingNoteOpenId = null;
+  await persistTestingSession();
+  render();
+}
+
+async function saveTestingEvidenceBlob(inputBlob, { source = 'native', sourceTabId = null, toastMessage = 'Screenshot captured', requestedTestCaseId = null } = {}) {
+  const session = state.testingSession;
+  if (!session || !inputBlob || session.status !== 'active') return false;
   const evidenceId = `evidence_${crypto.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
-  const imageBlobKey = `${state.testingSession.id}:${evidenceId}`;
-  await putEvidenceBlob(imageBlobKey, evidenceBlob);
-  const stepId = state.testingSession.currentEvidenceStepId || null;
+  const imageBlobKey = `${session.id}:${evidenceId}`;
+  await putEvidenceBlob(imageBlobKey, inputBlob);
+  let testCaseId = null;
+  if (!isEvidenceOnlyTesting(session)) {
+    const currentId = requestedTestCaseId || state.testingActiveCaseId || session.currentEvidenceTestCaseId || session.testCases?.[0]?.id || null;
+    testCaseId = session.testCases?.some(tc => tc.id === currentId) ? currentId : null;
+    if (testCaseId) {
+      state.testingActiveCaseId = testCaseId;
+      session.currentEvidenceTestCaseId = testCaseId;
+    }
+  }
   const evidence = {
     id: evidenceId,
-    capturedAt: capturedAt.toISOString(),
-    testCaseId: testingStepById(state.testingSession, stepId)?.testCase?.id || null,
-    stepId,
+    sessionId: session.id,
+    capturedAt: new Date().toISOString(),
+    testCaseId,
     imageBlobKey,
     sourceTabId: sourceTabId || null,
     source,
-    timestampApplied: !!stamp
+    timestampApplied: false,
+    note: null
   };
-  state.testingSession.evidence.push(evidence);
-  if (evidence.stepId) state.testingExpandedEvidence.add(evidence.stepId);
-  if (isEvidenceOnlyTesting(state.testingSession)) state.testingGeneralEvidenceExpanded = true;
-  const previewUrl = URL.createObjectURL(evidenceBlob);
-  testingObjectUrls.set(evidence.id, previewUrl);
+  session.evidence = Array.isArray(session.evidence) ? session.evidence : [];
+  session.evidence.push(evidence);
+  testingObjectUrls.set(evidenceId, URL.createObjectURL(inputBlob));
+  if (isEvidenceOnlyTesting(session)) state.testingGeneralEvidenceExpanded = true;
+  else state.testingCollapsedCases.delete(testCaseId);
   await persistTestingSession();
-  showToast(toastMessage, { type: 'success', duration: 1050, transientKey: source === 'pasted' ? 'screenshot-pasted' : 'screenshot-captured' });
+  showToast(toastMessage, {
+    type: 'success', duration: 1500,
+    transientKey: source === 'pasted' ? 'screenshot-pasted' : 'screenshot-captured',
+    subtitle: `Saved to ${String(session.sessionName || session.workProduct || session.exportFilename || '').trim() || 'your ForcePilot testing session'}`
+  });
   return true;
 }
 
-async function saveCapturedScreenshotData(dataUrl, { sourceTabId = null } = {}) {
-  if (!dataUrl) return false;
-  const capturedBlob = await (await fetch(dataUrl)).blob();
-  return saveTestingEvidenceBlob(capturedBlob, { source: 'native', sourceTabId, stamp: true, toastMessage: 'Screenshot captured' });
+function autoResizeTestingTextareas() {
+  document.querySelectorAll('.testing-editor-title textarea').forEach(textarea => {
+    textarea.style.height = 'auto';
+    textarea.style.height = `${Math.max(42, textarea.scrollHeight)}px`;
+  });
+}
+
+async function setTestingCaseStatus(tcId, status) {
+  const session = state.testingSession;
+  const tc = session?.testCases?.find(item => item.id === tcId);
+  if (!tc || !['pass', 'fail', 'blocked', 'not-marked'].includes(status)) return;
+  tc.status = status;
+  tc.statusSource = 'manual';
+  state.testingStatusMenuId = null;
+  await persistTestingSession();
+  render();
+  requestAnimationFrame(() => document.querySelector(`[data-open-testing-status="${CSS.escape(tcId)}"]`)?.focus({ preventScroll: true }));
 }
 
 function isImageClipboardItem(item) {
@@ -1993,7 +2929,7 @@ async function readClipboardImage() {
   return null;
 }
 
-async function pasteTestingScreenshot() {
+async function pasteTestingScreenshot(testCaseId = null) {
   if (!state.testingSession || state.testingCaptureBusy) return;
   try {
     const blob = await readClipboardImage();
@@ -2001,7 +2937,7 @@ async function pasteTestingScreenshot() {
       showToast('No screenshot found in clipboard.', { type: 'warning', duration: 2600 });
       return;
     }
-    await saveTestingEvidenceBlob(blob, { source: 'pasted', stamp: false, toastMessage: 'Screenshot pasted' });
+    await saveTestingEvidenceBlob(blob, { source: 'pasted', stamp: false, toastMessage: 'Screenshot pasted', requestedTestCaseId: state.testingActiveCaseId || state.testingSession.currentEvidenceTestCaseId || null });
     render();
   } catch (error) {
     showToast(error?.message || 'Could not paste screenshot.', { type: 'error', duration: 3200 });
@@ -2020,20 +2956,22 @@ async function handleTestingImagePaste(event) {
   event.preventDefault();
   event.stopPropagation();
   try {
-    await saveTestingEvidenceBlob(blob, { source: 'pasted', stamp: false, toastMessage: 'Screenshot pasted' });
+    await saveTestingEvidenceBlob(blob, { source: 'pasted', stamp: false, toastMessage: 'Screenshot pasted', requestedTestCaseId: state.testingActiveCaseId || state.testingSession.currentEvidenceTestCaseId || null });
     render();
   } catch (error) {
     showToast(error?.message || 'Could not paste screenshot.', { type: 'error', duration: 3200 });
   }
 }
 
-async function captureTestingEvidence(stepId = null) {
-  if (!state.testingSession || state.testingCaptureBusy) return;
+async function captureTestingEvidence(testCaseId = null) {
+  if (!state.testingSession || state.testingSession.status !== 'active' || state.testingCaptureBusy) return;
   state.testingCaptureBusy = true;
-  if (stepId) state.testingSession.currentEvidenceStepId = stepId;
-  // Render the busy state first so the click feels immediate. No storage or
-  // connection round-trip happens before Chrome is asked to capture.
+  if (!isEvidenceOnlyTesting(state.testingSession)) {
+    state.testingActiveCaseId = testCaseId || state.testingActiveCaseId || state.testingSession.testCases?.[0]?.id || null;
+    state.testingSession.currentEvidenceTestCaseId = state.testingActiveCaseId;
+  }
   render();
+  const sessionId = state.testingSession.id;
   const tab = await activeTab();
   if (!tab?.id) {
     testingError('No active browser tab is available for capture.');
@@ -2042,17 +2980,27 @@ async function captureTestingEvidence(stepId = null) {
     return;
   }
   try {
-    const response = await chrome.runtime.sendMessage({ type: 'CAPTURE_TEST_SCREENSHOT', tabId: tab.id });
-    if (!response?.ok || !response.dataUrl) throw new Error(response?.message || 'Chrome could not capture the current tab.');
-    await saveCapturedScreenshotData(response.dataUrl, { sourceTabId: tab.id });
+    // Persist the active screenshot page/session and selected test case before asking
+    // the background worker to run the same capture-and-save pipeline as Alt+S.
+    await persistTestingSession();
+    await chrome.storage.local.set({ [TESTING_UI_STATE_KEY]: { view: 'testing-workspace', sessionId } });
+    const response = await chrome.runtime.sendMessage({ type: 'CAPTURE_AND_SAVE_TESTING_SESSION_SCREENSHOT', tabId: tab.id });
+    if (!response?.ok) throw new Error(response?.message || 'Could not capture and save the screenshot.');
+    const latest = await loadTestingSessionById(sessionId).catch(() => null);
+    if (latest && state.testingSession?.id === sessionId) {
+      state.testingSession = latest;
+      const summary = summarizeTestingSession(latest);
+      state.testingSessions = [summary, ...(state.testingSessions || []).filter(item => item.id !== sessionId)]
+        .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+      await loadTestingEvidenceUrls();
+      state.testingGeneralEvidenceExpanded = true;
+    }
   } catch (error) {
     testingError(error?.message || 'Could not capture the current tab.');
+  } finally {
     state.testingCaptureBusy = false;
     render();
-    return;
   }
-  state.testingCaptureBusy = false;
-  render();
 }
 
 async function blobAsPng(blob) {
@@ -2108,8 +3056,8 @@ function previewTestingEvidence(evidenceId) {
   preview.setAttribute('role','dialog');preview.setAttribute('aria-modal','true');preview.setAttribute('aria-label','Screenshot preview');
   preview.innerHTML = `<button class="testing-image-preview-close" type="button" aria-label="Close preview">${icon('close')}</button><img src="${url}" alt="Captured Salesforce evidence preview">`;
   document.body.appendChild(preview);
-  preview.querySelector('.testing-image-preview-close')?.focus();
-  preview.addEventListener('click', event => { if (event.target === preview || event.target.closest('.testing-image-preview-close')) { preview.remove(); trigger?.focus(); } });
+  preview.querySelector('.testing-image-preview-close')?.focus({ preventScroll: true });
+  preview.addEventListener('click', event => { if (event.target === preview || event.target.closest('.testing-image-preview-close')) { preview.remove(); trigger?.focus({ preventScroll: true }); } });
 }
 
 async function removeTestingEvidence(evidenceId) {
@@ -2125,18 +3073,34 @@ async function removeTestingEvidence(evidenceId) {
   render();
 }
 
-async function associateTestingEvidence(evidenceId, stepId) {
+async function associateTestingEvidence(evidenceId, testCaseId) {
   const session = state.testingSession;
   const evidence = session?.evidence?.find(item => item.id === evidenceId);
-  const hit = testingStepById(session, stepId);
-  if (!evidence || !hit) return;
-  evidence.stepId = stepId;
-  evidence.testCaseId = hit.testCase.id;
-  session.currentEvidenceStepId = stepId;
+  if (!evidence) return;
+  if (testCaseId && !session.testCases?.some(tc => tc.id === testCaseId)) return;
+  evidence.testCaseId = testCaseId || null;
+  if (state.testingActiveCaseId && !session.testCases.some(tc => tc.id === state.testingActiveCaseId)) state.testingActiveCaseId = null;
   state.testingAssociatingEvidenceId = null;
   await persistTestingSession();
-  showToast('Screenshot linked to step', { type: 'success', duration: 2000 });
+  showToast(testCaseId ? 'Screenshot associated with scenario' : 'Screenshot unassigned', { type: 'success', duration: 2000 });
   render();
+}
+
+async function confirmRecordingObjectCompatibility(recording, liveContext, alreadyConfirmed = false) {
+  if (alreadyConfirmed) return true;
+  const recordedObject = String(recording?.context?.objectApiName || recording?.context?.objectName || '').trim();
+  const currentObject = String(liveContext?.objectApiName || liveContext?.objectName || '').trim();
+  const isGeneric = value => !value || /^salesforce$/i.test(value);
+  // Pages such as Setup may not expose a reliable object context. Only warn when
+  // both sides identify concrete objects; an unknown context is not a mismatch.
+  if (isGeneric(recordedObject) || isGeneric(currentObject) || recordedObject.toLowerCase() === currentObject.toLowerCase()) return true;
+  return !!(await requestTestingConfirm({
+    title: 'Different Salesforce object',
+    message: `This recording belongs to ${objectLabel(recording.context || {})}, but the current live page appears to be ${objectLabel(liveContext || {})}. Do you want to autofill anyway?`,
+    confirmLabel: 'Continue Autofill',
+    cancelLabel: 'Cancel',
+    danger: false
+  }));
 }
 
 async function runTestingRecording(recordingId) {
@@ -2156,6 +3120,14 @@ async function runTestingRecording(recordingId) {
   if (ping) ready = { ok: true, context: ping.context || null };
   else ready = await ensureTabConnection(tab);
   if (!ready?.ok) { testingError(ready.message || 'Could not connect to Salesforce.'); state.testingAutofillBusy = false; render(); return; }
+  let liveContext = await chrome.tabs.sendMessage(tab.id, { type: 'GET_CONTEXT' }).catch(() => null);
+  if (!liveContext) liveContext = ready.context || await chrome.tabs.sendMessage(tab.id, { type: 'GET_CONTEXT' }).catch(() => null);
+  if (!liveContext?.objectApiName && liveContext?.context?.objectApiName) liveContext = liveContext.context;
+  if (!(await confirmRecordingObjectCompatibility(recording, liveContext))) {
+    state.testingAutofillBusy = false;
+    render();
+    return;
+  }
   let runRecording = { ...recording, steps: (recording.steps || []).filter(Boolean) };
   const enabledSteps = runRecording.steps.filter(step => step?.enabled !== false);
   if (!enabledSteps.length && runRecording.steps.length) runRecording = { ...runRecording, steps: runRecording.steps.map(step => ({ ...step, enabled: true })) };
@@ -2240,13 +3212,15 @@ async function loadTestingEvidenceBlobsForExport(snapshot) {
 
 async function exportTestingSessionWord() {
   const session = state.testingSession;
-  if (!session || state.testingExportBusy || state.testingZipBusy) return;
+  if (!session) return;
+  if (state.testingExportBusy || state.testingZipBusy) return;
   if (!(session.evidence || []).length) {
     showToast('Capture at least one screenshot before exporting.', { type: 'warning' });
     state.testingExportError = '';
     render();
     return;
   }
+  if (!String(session.exportFilename || session.workProduct || session.sessionName || '').trim()) { openEvidenceNameDialog('export-word'); return; }
 
   state.testingExportBusy = true;
   state.testingExportCompleted = false;
@@ -2259,6 +3233,9 @@ async function exportTestingSessionWord() {
     const evidenceBlobs = await loadTestingEvidenceBlobsForExport(snapshot);
     const exportSettings = await getSettings();
     const imageQuality = Math.min(0.95, Math.max(0.70, Number(exportSettings.exportImageQuality) || 88)) / 100;
+    state.testingExportStage = 'Loading export engine…';
+    render();
+    await ensureJSZipLoaded();
     state.testingExportStage = 'Building Word document…';
     render();
     const result = await buildTestingDocx(snapshot, evidenceBlobs, {
@@ -2293,13 +3270,15 @@ async function exportTestingSessionWord() {
 
 async function exportTestingSessionZip() {
   const session = state.testingSession;
-  if (!session || state.testingZipBusy || state.testingExportBusy) return;
+  if (!session) return;
+  if (state.testingZipBusy || state.testingExportBusy) return;
   if (!(session.evidence || []).length) {
     showToast('Capture at least one screenshot before exporting the ZIP.', { type: 'warning' });
     state.testingZipError = '';
     render();
     return;
   }
+  if (!String(session.exportFilename || session.workProduct || session.sessionName || '').trim()) { openEvidenceNameDialog('export-zip'); return; }
 
   state.testingZipBusy = true;
   state.testingZipCompleted = false;
@@ -2311,6 +3290,9 @@ async function exportTestingSessionZip() {
     const evidenceBlobs = await loadTestingEvidenceBlobsForExport(snapshot);
     const exportSettings = await getSettings();
     const imageQuality = Math.min(0.95, Math.max(0.70, Number(exportSettings.exportImageQuality) || 88)) / 100;
+    state.testingZipStage = 'Loading export engine…';
+    render();
+    await ensureJSZipLoaded();
     state.testingZipStage = 'Creating ZIP…';
     render();
     const result = await buildTestingEvidenceZip(snapshot, evidenceBlobs, {
@@ -2355,10 +3337,6 @@ function downloadTestingZipAgain() {
 async function finishTestingSession() {
   const session = state.testingSession;
   if (!session) return;
-  if (isEvidenceOnlyTesting(session) && !String(session.workProduct || '').trim()) {
-    openEvidenceNameDialog('finish');
-    return;
-  }
   await completeTestingSession();
 }
 
@@ -2391,14 +3369,14 @@ async function endTestingSession() {
   const captures = session.evidence?.length || 0;
   const missingExports = captures ? [
     ...(!state.testingExportCompleted ? ['Word document'] : []),
-    ...(!state.testingZipCompleted ? ['Screenshots ZIP'] : [])
+    ...(!state.testingZipCompleted ? ['screenshots ZIP'] : [])
   ] : [];
-  const name = session.workProduct || 'Screenshot session';
+  const name = testingSessionName(session) || 'Screenshot session';
   const message = missingExports.length
-    ? `End “${name}” and clear its ${captures} saved capture${captures === 1 ? '' : 's'}? You have not downloaded the ${missingExports.join(' and ')}. Export files you need before ending the session.`
-    : `End “${name}” and clear this testing session${captures ? ` with ${captures} saved capture${captures === 1 ? '' : 's'}` : ''}? This cannot be undone.`;
+    ? `End the “${name}” session and delete its ${captures} saved screenshot${captures === 1 ? '' : 's'}? The ${missingExports.join(' and ')} ${missingExports.length === 1 ? 'has' : 'have'} not been exported yet.`
+    : `End the “${name}” session${captures ? ` and delete its ${captures} saved screenshot${captures === 1 ? '' : 's'}` : ''}? This can’t be undone.`;
   const confirmed = await requestTestingConfirm({
-    title: 'End Testing session?',
+    title: 'End testing session?',
     message,
     confirmLabel: 'End session',
     danger: true
@@ -2428,12 +3406,13 @@ async function handleTestingDone(event) {
 }
 
 async function discardTestingSession() {
+  const deleting = state.testingSession;
   try {
-    for (const evidence of state.testingSession?.evidence || []) revokeTestingObjectUrl(evidence.id);
-    await clearTestingSession();
+    for (const evidence of deleting?.evidence || []) revokeTestingObjectUrl(evidence.id);
+    if (deleting?.id) await deleteTestingSession(deleting);
   } catch {}
+  if (deleting?.id) state.testingSessions = (state.testingSessions || []).filter(session => session.id !== deleting.id);
   state.testingSession = null;
-  state.testingLifecycleDialog = false;
   state.testingConfirmDialog = null;
   state.testingEvidenceNameDialog = null;
   state.testingPasteText = '';
@@ -2453,35 +3432,57 @@ async function startRecording() {
   const tab = await activeTab(); if (!tab?.id) return;
   const ready = await ensureTabConnection(tab); if (!ready?.ok) return showToast(ready.message || 'Could not connect to Salesforce.', { type: 'error', duration: 3400 });
   const fresh = await sendTab(tab, { type: 'REFRESH_CONTEXT' });
-  if (!fresh?.objectApiName || fresh.objectApiName === 'Salesforce') return showInline('Could not determine the current Salesforce object. Refresh the Salesforce record and try again.');
+  // A concrete object is useful on Lightning record pages, but is not required
+  // on Salesforce Setup, Visualforce utility, or Experience Cloud pages.
+  if (!fresh?.objectApiName) return showInline('Could not read the Salesforce page context. Refresh the page and try again.');
   state.context = fresh;
   const r = await sendTab(tab, { type: 'START_RECORDING' });
   if (!r?.ok) return showInline(r?.message || 'Could not start recording.');
-  state.pendingRecording = null; state.pendingRecordingTabId = null; state.recordingPaused = false; state.recording = true; state.recordingTabId = tab.id; state.addingToRecordingId = null; state.context = r.context || state.context; state.activeSteps = r.steps || []; state.run = null; state.view = 'recording'; render();
-  clearInterval(window.fpTimer); window.fpTimer = setGuardedInterval(async () => { const d = await sendTab(tab, { type:'GET_RECORDING_STATE' }); if (!d?.recording) return; state.activeSteps = d.steps || []; const list=document.getElementById('recording-field-list'); if(list){ list.innerHTML = renderLiveRecordingRows(state.activeSteps); const note=document.getElementById('recording-note'); if(note) note.classList.toggle('is-hidden',state.activeSteps.length>0); list.querySelectorAll('[data-remove-live-step]').forEach(b=>b.addEventListener('click',async e=>{ e.stopPropagation(); await removeLiveRecordingStep(Number(e.currentTarget.dataset.removeLiveStep)); })); } }, 900);
+  liveRecordingRevision++;
+  state.pendingRecording = null; state.pendingRecordingTabId = null; state.recordingPaused = false; state.recording = true; state.recordingTabId = tab.id; state.addingToRecordingId = null; state.context = r.context || state.context; state.activeSteps = r.steps || []; state.activeLookupCreation=null; state.run = null; state.view = 'recording'; render();
+   clearInterval(window.fpTimer); window.fpTimer = setGuardedInterval(async () => { if(liveRecordingMutationInFlight||stopRecordingPromise)return; const revision=liveRecordingRevision; const d = await sendTab(tab, { type:'GET_RECORDING_STATE' }); if (liveRecordingMutationInFlight||stopRecordingPromise||revision!==liveRecordingRevision || !d?.recording) return; state.activeSteps = d.steps || []; state.activeLookupCreation=d.lookupCreation||null; const captureStatus=document.getElementById('lookup-create-capture-status'); if(captureStatus)captureStatus.innerHTML=renderLiveLookupCreationStatus(state.activeLookupCreation); const list=document.getElementById('recording-field-list'); if(list){ updateLiveRecordingList(list, state.activeSteps); const note=document.getElementById('recording-note'); if(note) note.classList.toggle('is-hidden',state.activeSteps.length>0);  } }, 300);
 }
 
 async function togglePauseRecording(){const id=state.recordingTabId;if(!id)return;const tab=await chrome.tabs.get(id).catch(()=>null);if(!tab?.id)return;const next=!state.recordingPaused;const r=await sendTab(tab,{type:next?'PAUSE_RECORDING':'RESUME_RECORDING'});if(!r?.ok)return showInline(r?.message||'Could not change recording state.');state.recordingPaused=!!r.paused;render()}
 
 async function stopRecording() {
+  if (stopRecordingPromise) return stopRecordingPromise;
+  // Invalidate an already-running poll so it cannot repaint stale rows while
+  // Stop is collecting the final recording snapshot.
+  liveRecordingRevision++;
+  const button=document.getElementById('stop');
+  if(button){button.disabled=true;button.setAttribute('aria-busy','true');const label=button.querySelector('span');if(label)label.textContent='Stopping…';}
+  stopRecordingPromise=(async()=>stopRecordingImpl())();
+  try{return await stopRecordingPromise;}
+  finally{
+    stopRecordingPromise=null;
+    if(state.recording && button?.isConnected){button.disabled=false;button.removeAttribute('aria-busy');const label=button.querySelector('span');if(label)label.textContent=state.addingToRecordingId?'Done adding':'Stop recording';}
+  }
+}
+
+async function stopRecordingImpl() {
   clearInterval(window.fpTimer);
   const id = state.recordingTabId;
   const wasAppending = !!state.addingToRecordingId;
   const appendId = state.addingToRecordingId;
   const tab = id ? await chrome.tabs.get(id).catch(() => null) : null;
-  const r = tab?.id ? await sendTab(tab, { type: 'STOP_RECORDING' }) : null;
+  const r = tab?.id ? await sendTab(tab, { type: 'STOP_RECORDING', multiFrame:true, appendRecording:wasAppending&&appendId?state.recordings[appendId]:null }) : null;
   state.recording = false; state.recordingPaused=false; state.recordingTabId = null; state.addingToRecordingId = null;
   // If the Salesforce content script was reloaded/navigated while recording,
   // STOP_RECORDING can legitimately return NOT_RECORDING even though the Side Panel
   // still has the latest polled field list. Recover that snapshot instead of losing it.
   if (!r?.recording && Array.isArray(state.activeSteps) && state.activeSteps.length) {
-    const recoveredSteps = clone(state.activeSteps);
+    const recoveredSteps = clone(state.activeSteps).filter(step=>!step?.__fpExistingAppendStep).map(step=>{const clean={...step};delete clean.__fpExistingAppendStep;delete clean.__fpExistingIndex;delete clean.__fpFrameStepIndex;delete clean.__fpStorageFrameId;return clean;});
     const context = state.context || {};
     if (wasAppending && appendId && state.recordings[appendId]) {
+      const previous=state.recordings[appendId];
+      const keyOf=step=>`${step?.frame?.framePath||step?.frame?.origin||''}|${step?.target?.key||step?.target?.apiName||step?.target?.label||''}|${step?.meta?.recordedAt||JSON.stringify(step?.value??'')}`;
+      const recovered=[...(previous.steps||[])];const seen=new Set(recovered.map(keyOf));
+      for(const step of recoveredSteps){const clean={...step};delete clean.__fpFrameStepIndex;delete clean.__fpStorageFrameId;const key=keyOf(clean);if(!seen.has(key)){seen.add(key);recovered.push(clean);}}
       state.recordings[appendId] = {
-        ...state.recordings[appendId],
-        context: {...state.recordings[appendId].context, ...context},
-        steps: recoveredSteps,
+        ...previous,
+        context: {...previous.context, ...context},
+        steps: recovered.map((step,i)=>({...step,sequence:i+1})),
         updatedAt: new Date().toISOString()
       };
       await saveRecordings(state.recordings);
@@ -2491,7 +3492,6 @@ async function stopRecording() {
       state.view = 'detail';
       if (id) { try { await chrome.runtime.sendMessage({ type: 'RELEASE_RECORDING_LOCK', tabId: id, windowId: state.windowId, incognito: state.incognito }); } catch {} }
       render();
-      showToast('Recording stopped using the latest captured fields.', { type: 'warning', duration: 3000 });
       return;
     }
     state.pendingRecording = {
@@ -2509,11 +3509,21 @@ async function stopRecording() {
     state.view = 'save-name';
     if (id) { try { await chrome.runtime.sendMessage({ type: 'RELEASE_RECORDING_LOCK', tabId: id, windowId: state.windowId, incognito: state.incognito }); } catch {} }
     render();
-    showToast('Recording stopped using the latest captured fields.', { type: 'warning', duration: 3000 });
     return;
   }
   if (r?.recording) {
     const recordedSteps = Array.isArray(r.recording.steps) ? r.recording.steps.filter(Boolean) : [];
+    // Multi-frame append mode returns a merged pending record so all frames can
+    // contribute without saving partial copies. Commit it back to the existing
+    // recording here, preserving the existing name and identity.
+    if (wasAppending && appendId && r.recording.id === appendId && recordedSteps.length) {
+      const previous=state.recordings[appendId]||{};
+      state.recordings[appendId]={...previous,...r.recording,id:appendId,name:previous.name||r.recording.name,createdAt:previous.createdAt||r.recording.createdAt,updatedAt:new Date().toISOString()};
+      await saveRecordings(state.recordings);
+      state.selectedId=appendId;state.pendingRecording=null;state.pendingRecordingTabId=null;state.run=null;state.view='detail';
+      if(id){try{await chrome.runtime.sendMessage({type:'RELEASE_RECORDING_LOCK',tabId:id,windowId:state.windowId,incognito:state.incognito});}catch{}}
+      render();return;
+    }
     if (recordedSteps.length === 0) {
       const pendingTabId = state.pendingRecordingTabId || id;
       state.pendingRecording = null;
@@ -2546,11 +3556,26 @@ async function stopRecording() {
   render();
 }
 
-async function startAutofill(onlyIndexes = null) {
+async function startAutofill(onlyIndexes = null, confirmedObjectMismatch = false) {
   const r = state.recordings[state.selectedId]; if (!r) return;
   const tab = await activeTab(); if (!tab?.id) return showInline('Open a Salesforce page to run Autofill.');
-  const ready = await ensureTabConnection(tab);
+  // Never use state.context for this guard: the side panel can outlive a
+  // Salesforce SPA navigation, so it may describe the previous object.
+  let liveContext = await chrome.tabs.sendMessage(tab.id, { type: 'GET_CONTEXT' }).catch(() => null);
+  let ready = liveContext ? { ok: true, context: liveContext, existing: true } : await ensureTabConnection(tab);
   if (!ready?.ok) { showToast(ready.message || 'Could not connect to Salesforce.', { type: 'error', duration: 3400 }); return; }
+  if (!liveContext) liveContext = ready.context || await chrome.tabs.sendMessage(tab.id, { type: 'GET_CONTEXT' }).catch(() => null);
+  if (!liveContext?.objectApiName && liveContext?.context?.objectApiName) liveContext = liveContext.context;
+  if (!(await confirmRecordingObjectCompatibility(r, liveContext, confirmedObjectMismatch))) return;
+  const hasMalformedPicklist = (r.steps||[]).some(s=>['Picklist','Multipicklist'].includes(fieldTypeLabel(s))&&isAggregatePicklistText(s.value,s?.target?.label));
+  if(hasMalformedPicklist){
+    const before=JSON.stringify(r.steps||[]);
+    await hydrateDraftPicklists(r);
+    if(before!==JSON.stringify(r.steps||[])){
+      r.updatedAt=new Date().toISOString();state.recordings[r.id]=r;
+      await saveRecordings(state.recordings).catch(()=>{});
+    }
+  }
   const totalSteps = Array.isArray(r.steps) ? r.steps.length : 0;
   if (!totalSteps) {
     showToast('This recording has no fields to autofill.', { type: 'warning' });
@@ -2640,12 +3665,59 @@ async function retryFailed() {
       if (field) field.textContent = r.steps[idx]?.target?.label || 'Starting…';
     }
   }, 350);
+  // Reuse values already generated for failed fields so Retry Failed is a retry
+  // of the same payload, not a second attempt with different random data.
+  const reuseGeneratedValues = {};
+  const retryStepKey = step => String(step?.id || step?.meta?.recordedAt || step?.target?.key || `${step?.target?.label || 'Field'}:${step?.sequence || ''}`);
+  const collectRetryValue = (step, result) => {
+    if (!step || !result) return;
+    if (result.randomized && result.generatedValue !== undefined) {
+      const strategy = result.generationStrategy || step?.randomization?.strategy || '';
+      const cached = { ok: true, value: result.generatedValue, strategy, metaPatch: result.generationMetaPatch || {} };
+      if (strategy === 'lookupRandom' && result.generatedValue && typeof result.generatedValue === 'object') {
+        cached.lookup = true;
+        cached.lookupResolved = !!(result.generatedValue.recordId || result.generatedValue.displayValue);
+        cached.selected = result.generatedValue.displayValue || '';
+        cached.selectedRecordId = result.generatedValue.recordId || '';
+      }
+      reuseGeneratedValues[retryStepKey(step)] = cached;
+    }
+    const childSteps = Array.isArray(step?.meta?.createNewRecord?.fields) ? step.meta.createNewRecord.fields : [];
+    const childResults = Array.isArray(result?.workflowResults) ? result.workflowResults : [];
+    for (let i = 0; i < childSteps.length; i++) {
+      const child = childSteps[i];
+      const childResult = childResults.find(item => String(item?.id || '') === String(child?.id || ''))
+        || childResults.find(item => String(item?.label || '').toLowerCase() === String(child?.target?.label || '').toLowerCase())
+        || childResults[i];
+      if (childResult) collectRetryValue(child, childResult);
+    }
+  };
+  const failedSetForReuse = new Set(failed.map(Number));
+  for (const item of previousRun?.executed || []) {
+    if (failedSetForReuse.has(Number(item.index))) collectRetryValue(item.step, item.result);
+  }
   try {
-    const resp = await sendTab(tab, { type: 'REPLAY_RECORDING', recording: r, onlyIndexes: failed, fillOnlyBlank: false });
+    const resp = await sendTab(tab, { type: 'REPLAY_RECORDING', recording: r, onlyIndexes: failed, fillOnlyBlank: false, reuseGeneratedValues, usedRandomizationValues: previousRun?.usedRandomizationValues || [] });
     clearInterval(window.fpProgressTimer);
     const retryRun = resp || { ok: false, executed: [], error: 'Salesforce did not respond.' };
-    const replacements = new Map((Array.isArray(retryRun.executed) ? retryRun.executed : []).map(item => [item.index, item]));
-    state.run = { ...previousRun, ...retryRun, executed: (previousRun?.executed || []).map(item => replacements.get(item.index) || item), error: retryRun.error || '' };
+    const failedIndexes = new Set(failed);
+    const replacements = new Map((Array.isArray(retryRun.executed) ? retryRun.executed : []).map(item => [Number(item.index), item]));
+    // A retry is a patch to the previous results, not a new full run. Never let
+    // the retry response's shortened list (or aggregate ok flag) change fields
+    // that were already filled or skipped in the original run.
+    const mergedExecuted = (previousRun?.executed || []).map(item => {
+      const index=Number(item.index);
+      if(!failedIndexes.has(index))return item;
+      return replacements.get(index) || item;
+    });
+    const remainingFailures=mergedExecuted.some(item=>statusOf(item)==='failed');
+    state.run = {
+      ...previousRun,
+      ...retryRun,
+      executed: mergedExecuted,
+      ok: !remainingFailures,
+      error: remainingFailures ? (retryRun.error || '') : ''
+    };
   } catch (error) {
     clearInterval(window.fpProgressTimer);
     state.run = { ...previousRun, ok: false, executed: previousRun?.executed || [], error: error?.message || 'Autofill retry could not be completed.' };
@@ -2672,15 +3744,21 @@ async function overwriteSkipped(index) {
   render();
 }
 
-async function focusStep(i) { const r = state.recordings[state.selectedId], tab = await activeTab(); if (r && tab?.id && r.steps[i]) await sendTab(tab, { type: 'FOCUS_FIELD', target: r.steps[i].target }); }
-async function focusIndex(i) { const ex = state.run?.executed?.find(x => x.index === i), tab = await activeTab(); if (ex && tab?.id) await sendTab(tab, { type: 'FOCUS_FIELD', target: ex.step.target }); }
+async function focusStep(i) { const r = state.recordings[state.selectedId], tab = await activeTab(); if (r && tab?.id && r.steps[i]) await sendTab(tab, { type: 'FOCUS_FIELD', target: r.steps[i].target, frame:r.steps[i].frame }); }
+async function focusIndex(i) { const ex = state.run?.executed?.find(x => x.index === i), tab = await activeTab(); if (ex && tab?.id) await sendTab(tab, { type: 'FOCUS_FIELD', target: ex.step.target, frame:ex.frame||ex.step.frame }); }
 function showInline(msg, type = 'error') { showToast(msg, { type, duration: type === 'success' ? 2200 : 3400 }); }
 
 document.addEventListener('click', testingDismissOpenMenu);
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes['forcepilot.recordings.v1']) {
-    getRecordings().then(next => { state.recordings = next; if (state.selectedId && !state.recordings[state.selectedId]) { state.selectedId = null; state.run = null; state.view = 'home'; state.editing = false; state.draft = null; } render(); }).catch(() => {});
+    getRecordings().then(next => {
+      state.recordings = next;
+      if (state.selectedId && !state.recordings[state.selectedId]) {
+        state.selectedId = null; state.run = null; state.view = 'home'; state.editing = false; state.draft = null;
+      }
+      if (!suppressRecordingStorageRender) render();
+    }).catch(() => {});
   }
 });
 
@@ -2691,9 +3769,27 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-watchTheme(dark=>applyTheme(dark));
+watchTheme(dark=>{
+  state.darkMode = dark === true;
+  applyTheme(state.darkMode);
+  const toggle = document.getElementById('toggleDarkMode');
+  if (toggle) {
+    const label = state.darkMode ? 'Switch to light mode' : 'Switch to dark mode';
+    toggle.setAttribute('aria-pressed', String(state.darkMode));
+    toggle.setAttribute('aria-label', label);
+    toggle.title = label;
+  }
+});
 initializeFirstRunTour().finally(() => refresh());
-
 
 window.addEventListener('keydown', handleEvidenceNameKeydown);
 window.addEventListener('paste', handleTestingImagePaste, true);
+window.addEventListener('keydown', async event => {
+  if (!(event.ctrlKey || event.metaKey) || String(event.key || '').toLowerCase() !== 'v') return;
+  if (!state.testingSession || state.view !== 'testing-workspace') return;
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) return;
+  if (typeof navigator.clipboard?.read !== 'function') return;
+  event.preventDefault();
+  await pasteTestingScreenshot(state.testingActiveCaseId || state.testingSession.currentEvidenceTestCaseId || null);
+}, true);

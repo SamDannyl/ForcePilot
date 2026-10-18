@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "ForcePilot - Salesforce Record Autofill",
-  "version": "2.0",
-  "description": "Record Salesforce field values and reuse them to autofill similar records.",
-  "incognito": "split",
+  "name": "ForcePilot - Salesforce Autofill & Testing",
+  "version": "2.3.0",
+  "description": "Simplify Salesforce testing, automate repetitive record creation, capture test evidence, and export test documentation.",
+  "incognito": "spanning",
   "permissions": [
     "storage",
     "scripting",
@@ -11,7 +11,8 @@
     "unlimitedStorage",
     "activeTab",
     "clipboardWrite",
-    "clipboardRead"
+    "clipboardRead",
+    "webNavigation"
   ],
   "host_permissions": [
     "<all_urls>",
@@ -19,7 +20,20 @@
     "https://*.lightning.force.com/*",
     "https://*.my.salesforce.com/*",
     "https://*.visualforce.com/*",
-    "https://*.vf.force.com/*"
+    "https://*.vf.force.com/*",
+    "https://*.force.com/*",
+    "https://*.site.com/*",
+    "https://*.my.site.com/*",
+    "https://*.salesforce-sites.com/*",
+    "https://*.salesforce-communities.com/*",
+    "https://*.salesforce-setup.com/*",
+    "https://*.my.salesforce-setup.com/*",
+    "https://*.salesforce-experience.com/*",
+    "https://*.salesforce.app/*",
+    "https://*.my.salesforce.app/*",
+    "https://*.forceusercontent.com/*",
+    "https://*.force-user-content.com/*",
+    "https://*.salesforce-scrt.com/*"
   ],
   "action": {
     "default_title": "ForcePilot",
@@ -44,13 +58,86 @@
         "https://*.lightning.force.com/*",
         "https://*.my.salesforce.com/*",
         "https://*.visualforce.com/*",
-        "https://*.vf.force.com/*"
+        "https://*.vf.force.com/*",
+        "https://*.force.com/*",
+        "https://*.site.com/*",
+        "https://*.my.site.com/*",
+        "https://*.salesforce-sites.com/*",
+        "https://*.salesforce-communities.com/*",
+        "https://*.salesforce-setup.com/*",
+        "https://*.my.salesforce-setup.com/*",
+        "https://*.salesforce-experience.com/*",
+        "https://*.salesforce.app/*",
+        "https://*.my.salesforce.app/*",
+        "https://*.forceusercontent.com/*",
+        "https://*.force-user-content.com/*",
+        "https://*.salesforce-scrt.com/*"
       ],
       "js": [
         "src/launcher.js"
       ],
       "run_at": "document_idle",
       "all_frames": false
+    },
+    {
+      "matches": [
+        "https://*.salesforce.com/*",
+        "https://*.lightning.force.com/*",
+        "https://*.my.salesforce.com/*",
+        "https://*.visualforce.com/*",
+        "https://*.vf.force.com/*",
+        "https://*.force.com/*",
+        "https://*.site.com/*",
+        "https://*.my.site.com/*",
+        "https://*.salesforce-sites.com/*",
+        "https://*.salesforce-communities.com/*",
+        "https://*.salesforce-setup.com/*",
+        "https://*.my.salesforce-setup.com/*",
+        "https://*.salesforce-experience.com/*",
+        "https://*.salesforce.app/*",
+        "https://*.my.salesforce.app/*",
+        "https://*.forceusercontent.com/*",
+        "https://*.force-user-content.com/*",
+        "https://*.salesforce-scrt.com/*"
+      ],
+      "js": [
+        "page_bridge.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_origin_as_fallback": true,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://*.salesforce.com/*",
+        "https://*.lightning.force.com/*",
+        "https://*.my.salesforce.com/*",
+        "https://*.visualforce.com/*",
+        "https://*.vf.force.com/*",
+        "https://*.force.com/*",
+        "https://*.site.com/*",
+        "https://*.my.site.com/*",
+        "https://*.salesforce-sites.com/*",
+        "https://*.salesforce-communities.com/*",
+        "https://*.salesforce-setup.com/*",
+        "https://*.my.salesforce-setup.com/*",
+        "https://*.salesforce-experience.com/*",
+        "https://*.salesforce.app/*",
+        "https://*.my.salesforce.app/*",
+        "https://*.forceusercontent.com/*",
+        "https://*.force-user-content.com/*",
+        "https://*.salesforce-scrt.com/*"
+      ],
+      "js": [
+        "src/randomization-core.js",
+        "src/shared.js",
+        "src/content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true,
+      "match_origin_as_fallback": true,
+      "world": "ISOLATED"
     }
   ],
   "icons": {
@@ -72,7 +159,20 @@
         "https://*.lightning.force.com/*",
         "https://*.my.salesforce.com/*",
         "https://*.visualforce.com/*",
-        "https://*.vf.force.com/*"
+        "https://*.vf.force.com/*",
+        "https://*.force.com/*",
+        "https://*.site.com/*",
+        "https://*.my.site.com/*",
+        "https://*.salesforce-sites.com/*",
+        "https://*.salesforce-communities.com/*",
+        "https://*.salesforce-setup.com/*",
+        "https://*.my.salesforce-setup.com/*",
+        "https://*.salesforce-experience.com/*",
+        "https://*.salesforce.app/*",
+        "https://*.my.salesforce.app/*",
+        "https://*.forceusercontent.com/*",
+        "https://*.force-user-content.com/*",
+        "https://*.salesforce-scrt.com/*"
       ]
     }
   ],
@@ -83,6 +183,12 @@
         "default": "Alt+X"
       },
       "description": "Open ForcePilot on the current Salesforce tab"
+    },
+    "capture-testing-screenshot": {
+      "suggested_key": {
+        "default": "Alt+S"
+      },
+      "description": "Capture the active tab into the current ForcePilot Testing session"
     }
   }
 }

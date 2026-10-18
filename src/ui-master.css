@@ -860,3 +860,934 @@ html[data-theme="dark"] .testing-paste-title-row .testing-template-download { co
   outline:2px solid var(--fp-ui-focus) !important;
   outline-offset:2px !important;
 }
+
+
+/* v2.1.6 — Keep the Saved recordings folder icon ForcePilot blue in both themes. */
+.recent-section .section-title-icon {
+  color: var(--fp-ui-blue, #1976d2) !important;
+}
+
+/* The Screenshot and Autofill actions sit directly on the page, without a strip/card behind them. */
+.testing-workspace-page .testing-sticky-actions,
+.testing-workspace-page .testing-sticky-actions-evidence-only {
+  background: transparent !important;
+  border: 0 !important;
+  border-bottom: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  margin: 0 !important;
+  padding: 0 0 7px !important;
+}
+.testing-workspace-page .testing-action-bar {
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+/* v2.2.1 scenario workspace polish */
+.testing-workspace-page .testing-topbar.fp-route-header{align-items:flex-start!important;gap:10px!important}
+.testing-workspace-page .fp-route-header .testing-heading{min-width:0!important;max-width:100%!important;overflow:hidden!important}
+.testing-workspace-page .fp-route-header .testing-heading h1{display:block!important;width:100%!important;min-width:0!important;max-width:100%!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;overflow-wrap:normal!important;word-break:normal!important;font-size:19px!important;line-height:25px!important}
+.testing-session-name-inline{display:block;width:100%;min-width:0;max-width:100%;height:32px;padding:0 8px;border:1px solid var(--fp-ui-border);border-radius:7px;background:var(--fp-ui-surface);color:var(--fp-ui-text);font:600 14px/20px var(--fp-ui-font,Inter,system-ui,sans-serif);outline:none;box-sizing:border-box}
+.testing-session-name-inline:focus{border-color:var(--fp-ui-blue);box-shadow:0 0 0 2px var(--fp-ui-focus)}
+.testing-workspace-page .testing-header-actions{gap:5px!important;flex:0 0 auto!important;max-width:45%!important}
+.testing-workspace-page .testing-header-action{min-width:38px!important;padding:0 9px!important;white-space:nowrap!important}
+.testing-case-header-row{display:grid!important;grid-template-columns:18px minmax(0,1fr)!important;align-items:start!important;gap:7px!important;padding:10px 12px!important}
+.testing-case-header-row .testing-case-collapse{grid-column:1;grid-row:1/3;width:18px!important;min-width:18px!important;height:24px!important;display:grid!important;place-items:center!important;padding:0!important;align-self:start!important;background:transparent!important;border:0!important}
+.testing-case-header-row .testing-case-collapse-icon{display:grid;place-items:center;width:18px;height:22px}
+.testing-case-header-row .testing-case-collapse-icon .fp-icon{width:14px;height:14px;transform:rotate(90deg)}
+.testing-case.is-collapsed .testing-case-collapse-icon .fp-icon{transform:rotate(0deg)}
+.testing-case-header-content{grid-column:2;min-width:0;width:100%;display:flex;flex-direction:column;gap:4px}
+.testing-case-primary-line{display:flex;align-items:center;gap:8px;min-width:0;width:100%;min-height:24px}
+.testing-case-primary-line .testing-case-kicker{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px;line-height:15px;text-transform:none;letter-spacing:0}
+.testing-case-primary-line .testing-case-count{flex:0 0 auto;font-size:10px!important;min-height:22px!important;padding:0 8px!important}
+.testing-case-primary-line .testing-status-control{flex:0 0 24px!important;padding:0!important;justify-content:center!important}
+.testing-case-primary-line .testing-status-indicator{width:24px!important;height:24px!important;min-width:24px!important;border-radius:50%!important;padding:0!important}
+.testing-case-title{display:block!important;min-width:0!important;width:100%!important;max-width:100%!important;margin:0!important;color:var(--fp-ui-text)!important;font-size:12px!important;line-height:18px!important;font-weight:500!important;white-space:pre-wrap!important;overflow-wrap:anywhere!important;word-break:normal!important;text-overflow:clip!important;overflow:visible!important}
+.testing-case-content{padding:0 12px 12px!important}
+.testing-case-evidence-tools{display:flex!important;align-items:center!important;justify-content:flex-end!important;gap:6px!important;margin:0 0 8px!important;padding:0!important;min-height:28px!important}
+.testing-case-evidence-tools>span{display:none!important}
+.testing-case-capture-actions{display:flex;align-items:center;gap:7px}
+.testing-case-icon-action{width:34px!important;height:34px!important;min-width:34px!important;min-height:34px!important;padding:0!important;display:grid!important;place-items:center!important;border-radius:8px!important}
+.testing-case-icon-action .fp-icon{width:17px!important;height:17px!important}
+.testing-evidence-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr))!important;gap:9px!important;padding:0!important}
+.testing-evidence-card{min-width:0!important;width:100%!important}
+.testing-evidence-preview{width:100%!important;height:auto!important;min-height:0!important;aspect-ratio:16/9!important}
+.testing-evidence-meta{height:auto!important;min-height:0!important;display:flex!important;flex-direction:column!important;align-items:stretch!important;justify-content:flex-start!important;gap:5px!important;padding:6px 8px 7px!important;font-size:10px!important;line-height:14px!important;overflow:visible!important}
+.testing-evidence-time{display:block!important;white-space:nowrap!important;overflow:visible!important}
+.testing-evidence-actions{display:grid!important;grid-template-columns:repeat(4,minmax(28px,1fr))!important;align-items:center!important;justify-content:stretch!important;gap:4px!important;flex:0 0 auto!important;width:100%!important;min-width:0!important;overflow:visible!important}
+.testing-evidence-icon-action{width:100%!important;min-width:0!important;height:32px!important;min-height:32px!important;flex:0 0 auto!important;border:1px solid var(--fp-ui-border)!important;border-radius:7px!important;background:var(--fp-ui-surface)!important;color:var(--fp-ui-text-secondary)!important}
+.testing-evidence-icon-action .fp-icon{width:15px!important;height:15px!important}
+.testing-evidence-icon-action:hover,.testing-evidence-icon-action:focus-visible{background:var(--fp-ui-blue-soft)!important;color:var(--fp-ui-blue)!important;border-color:var(--fp-ui-border-strong)!important}
+.testing-general-evidence-header{grid-template-columns:minmax(0,1fr) 34px 28px!important;gap:6px!important;padding-right:5px!important}
+.testing-paste-screenshot{width:34px!important;min-width:34px!important;padding:0!important;font-size:0!important}
+.testing-paste-screenshot .fp-icon{width:17px!important;height:17px!important}
+.testing-summary-stats{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+.testing-summary-stats.is-single{grid-template-columns:minmax(0,1fr)!important}
+.testing-summary-page .testing-heading h1{width:100%!important;max-width:100%!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}
+.testing-summary-page .testing-subtitle{max-width:100%!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}
+@media(max-width:380px){
+ .testing-workspace-page .testing-topbar.fp-route-header{gap:6px!important}
+ .testing-workspace-page .testing-header-actions{max-width:35%!important}
+ .testing-workspace-page .testing-header-action{padding:0 7px!important;font-size:11px!important}
+ .testing-case-primary-line{gap:5px!important}
+ .testing-case-primary-line .testing-case-kicker{font-size:9px!important}
+ .testing-case-primary-line .testing-case-count{font-size:9px!important;padding:0 5px!important}
+ .testing-evidence-actions{gap:3px!important}
+}
+
+.testing-evidence-actions.is-evidence-only{grid-template-columns:repeat(3,minmax(28px,1fr))!important}
+
+/* v2.2.2 — scenario evidence density, readable association, and no-scroll interactions. */
+.testing-workspace-page {
+  overflow-anchor: none !important;
+  scroll-behavior: auto !important;
+}
+.testing-case-header-row {
+  display: grid !important;
+  grid-template-columns: 18px minmax(0, 1fr) !important;
+  align-items: start !important;
+  gap: 4px !important;
+  padding: 10px 12px 7px 0 !important;
+}
+.testing-case-header-row .testing-case-collapse {
+  flex: 0 0 18px !important;
+  width: 18px !important;
+  min-width: 18px !important;
+}
+.testing-case-header-content {
+  min-width: 0 !important;
+  width: 100% !important;
+  padding: 0 !important;
+  gap: 5px !important;
+}
+.testing-case-primary-line {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 5px !important;
+  min-width: 0 !important;
+}
+.testing-case-primary-line .testing-case-kicker {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+}
+.testing-case-primary-line .testing-case-count {
+  flex: 0 0 auto !important;
+  white-space: nowrap !important;
+}
+.testing-case-primary-line .testing-status-control {
+  flex: 0 0 22px !important;
+  width: 22px !important;
+  padding: 0 !important;
+  margin-left: 0 !important;
+}
+.testing-case-primary-line .testing-status-indicator {
+  width: 22px !important;
+  min-width: 22px !important;
+  height: 22px !important;
+}
+.testing-case-content {
+  padding: 0 12px 12px 22px !important;
+  min-width: 0 !important;
+}
+.testing-case-title {
+  display: block !important;
+  margin: 0 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  padding: 0 !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  word-break: normal !important;
+  overflow: visible !important;
+  text-overflow: clip !important;
+}
+.testing-case-evidence-tools {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  min-height: 34px !important;
+  height: auto !important;
+  margin: 0 0 7px !important;
+  padding: 0 !important;
+  overflow: visible !important;
+}
+.testing-evidence-grid,
+.testing-general-evidence .testing-evidence-grid,
+.testing-case-content .testing-evidence-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  grid-auto-flow: row !important;
+  align-items: start !important;
+  gap: 7px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+}
+.testing-evidence-card {
+  min-width: 0 !important;
+  max-width: 100% !important;
+  width: 100% !important;
+  overflow: hidden !important;
+}
+.testing-evidence-preview {
+  display: block !important;
+  width: 100% !important;
+  height: auto !important;
+  min-height: 0 !important;
+  aspect-ratio: 16 / 9 !important;
+  overflow: hidden !important;
+}
+.testing-evidence-preview img {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+}
+.testing-evidence-meta {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 3px !important;
+  width: 100% !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  box-sizing: border-box !important;
+  padding: 2px 3px !important;
+  overflow: visible !important;
+  font-size: 8px !important;
+  line-height: 12px !important;
+}
+.testing-evidence-time {
+  display: block !important;
+  flex: 0 1 auto !important;
+  min-width: 0 !important;
+  max-width: 42px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  font-size: 8px !important;
+  line-height: 12px !important;
+}
+.testing-evidence-actions,
+.testing-evidence-actions.is-evidence-only {
+  display: flex !important;
+  flex: 1 1 auto !important;
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 0 !important;
+  width: auto !important;
+  min-width: 0 !important;
+  overflow: visible !important;
+}
+.testing-evidence-icon-action {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex: 0 0 18px !important;
+  width: 18px !important;
+  min-width: 18px !important;
+  max-width: 18px !important;
+  height: 23px !important;
+  min-height: 23px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: var(--fp-ui-text-secondary, #667085) !important;
+  box-shadow: none !important;
+}
+.testing-evidence-icon-action .fp-icon {
+  display: block !important;
+  width: 12px !important;
+  height: 12px !important;
+  min-width: 12px !important;
+  min-height: 12px !important;
+  fill: currentColor !important;
+}
+.testing-evidence-icon-action:hover,
+.testing-evidence-icon-action:focus-visible {
+  background: var(--fp-ui-blue-soft, rgba(25,118,210,.06)) !important;
+  color: var(--fp-ui-blue, #1976d2) !important;
+  outline-offset: -1px !important;
+}
+.testing-evidence-icon-action.danger:hover,
+.testing-evidence-icon-action.danger:focus-visible {
+  background: rgba(198,40,40,.09) !important;
+  color: var(--fp-ui-danger, #c62828) !important;
+}
+.testing-case-capture-actions {
+  display: flex !important;
+  align-items: center !important;
+  gap: 7px !important;
+}
+button.testing-case-icon-action.secondary {
+  width: 34px !important;
+  min-width: 34px !important;
+  max-width: 34px !important;
+  height: 34px !important;
+  min-height: 34px !important;
+  padding: 0 !important;
+  display: grid !important;
+  place-items: center !important;
+  border: 1px solid var(--fp-ui-border-strong, #cfd6df) !important;
+  border-radius: 8px !important;
+  background: var(--fp-ui-surface, #fff) !important;
+  color: var(--fp-ui-blue, #1976d2) !important;
+  box-shadow: none !important;
+}
+button.testing-case-icon-action.secondary .fp-icon {
+  width: 17px !important;
+  height: 17px !important;
+  fill: currentColor !important;
+  color: inherit !important;
+}
+html[data-theme="dark"] button.testing-case-icon-action.secondary {
+  border-color: var(--theme-border-strong, #405166) !important;
+  background: var(--theme-surface-raised, #202a36) !important;
+  color: #8bc2ff !important;
+}
+html[data-theme="dark"] button.testing-case-icon-action.secondary:hover,
+html[data-theme="dark"] button.testing-case-icon-action.secondary:focus-visible {
+  border-color: var(--theme-accent-button, #5ca8ff) !important;
+  background: var(--theme-accent-soft, #1a3047) !important;
+  color: #b6d9ff !important;
+}
+html[data-theme="light"] button.testing-case-icon-action.secondary {
+  border-color: #cfd6df !important;
+  background: #fff !important;
+  color: #1976d2 !important;
+}
+
+/* Association picker: give the number, full original title, and Current badge separate columns. */
+.testing-dialog-list {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  gap: 2px !important;
+  padding: 8px !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+.testing-dialog-case {
+  display: grid !important;
+  grid-template-columns: max-content minmax(0, 1fr) max-content !important;
+  align-items: start !important;
+  justify-content: stretch !important;
+  gap: 8px !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+  padding: 10px 9px !important;
+  border: 1px solid transparent !important;
+  border-radius: 8px !important;
+  color: var(--fp-ui-text, var(--text)) !important;
+  font-size: 11px !important;
+  line-height: 16px !important;
+  white-space: normal !important;
+  text-align: left !important;
+}
+.testing-dialog-case:hover,
+.testing-dialog-case:focus-visible {
+  background: var(--fp-ui-blue-soft, rgba(25,118,210,.06)) !important;
+  border-color: var(--fp-ui-border, var(--border)) !important;
+  outline: none !important;
+}
+.testing-dialog-case.is-current {
+  background: var(--fp-ui-blue-soft, rgba(25,118,210,.06)) !important;
+}
+.testing-dialog-case .testing-dialog-scenario-number {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: auto !important;
+  height: 22px !important;
+  min-height: 22px !important;
+  padding: 0 7px !important;
+  border-radius: 6px !important;
+  background: var(--fp-ui-surface-subtle, var(--surface-subtle)) !important;
+  color: var(--fp-ui-text-secondary, var(--muted)) !important;
+  font-size: 9px !important;
+  line-height: 13px !important;
+  font-weight: 700 !important;
+  white-space: nowrap !important;
+}
+.testing-dialog-case .testing-dialog-scenario-title {
+  display: block !important;
+  min-width: 0 !important;
+  width: auto !important;
+  height: auto !important;
+  max-width: 100% !important;
+  padding: 2px 0 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--fp-ui-text, var(--text)) !important;
+  font-size: 11px !important;
+  line-height: 16px !important;
+  font-weight: 500 !important;
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  word-break: normal !important;
+}
+.testing-dialog-case .testing-dialog-current {
+  display: inline-flex !important;
+  align-items: center !important;
+  height: 22px !important;
+  padding: 0 6px !important;
+  border-radius: 999px !important;
+  background: rgba(46,125,50,.10) !important;
+  color: var(--fp-ui-success, #2e7d32) !important;
+  font-size: 9px !important;
+  line-height: 13px !important;
+  white-space: nowrap !important;
+}
+.testing-dialog-case.testing-dialog-unassign {
+  display: flex !important;
+  justify-content: flex-start !important;
+  border-top-color: var(--fp-ui-border, var(--border)) !important;
+  margin-top: 5px !important;
+}
+html[data-theme="dark"] .testing-dialog-case .testing-dialog-scenario-number {
+  background: var(--theme-control, #252f3b) !important;
+  color: var(--theme-text-secondary, #c4ceda) !important;
+}
+html[data-theme="dark"] .testing-dialog-case .testing-dialog-scenario-title {
+  color: var(--theme-text, #f5f7fa) !important;
+}
+
+/* The scenario editor should not duplicate labels or let full-width textareas touch card borders. */
+.testing-editor-case {
+  box-sizing: border-box !important;
+  padding: 13px 13px 12px !important;
+  min-width: 0 !important;
+}
+.testing-editor-case-header {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 10px !important;
+  margin: 0 0 9px !important;
+}
+.testing-editor-case-heading {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  min-width: 0 !important;
+}
+.testing-editor-case-number {
+  max-width: 100% !important;
+  white-space: nowrap !important;
+}
+.testing-editor-title-compact {
+  display: block !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  box-sizing: border-box !important;
+}
+.testing-editor-title-compact textarea {
+  display: block !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  min-height: 58px !important;
+  padding: 10px 11px !important;
+  border-radius: 8px !important;
+  line-height: 18px !important;
+  overflow-wrap: anywhere !important;
+}
+.testing-editor-meta-field input,
+.testing-session-name-inline {
+  box-sizing: border-box !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+}
+html[data-theme="dark"] .testing-editor-title-compact textarea {
+  border-color: var(--theme-border-strong, #405166) !important;
+  background: var(--theme-control, #1b2430) !important;
+  color: var(--theme-text, #f5f7fa) !important;
+}
+html[data-theme="light"] .testing-editor-title-compact textarea {
+  border-color: #cfd6df !important;
+  background: #fff !important;
+  color: #1d2433 !important;
+}
+
+@media (max-width: 380px) {
+  .testing-evidence-grid,
+  .testing-general-evidence .testing-evidence-grid,
+  .testing-case-content .testing-evidence-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 5px !important;
+  }
+  .testing-evidence-meta {
+    gap: 1px !important;
+    padding-inline: 2px !important;
+  }
+  .testing-evidence-time {
+    max-width: 34px !important;
+    font-size: 7px !important;
+  }
+  .testing-evidence-icon-action {
+    flex-basis: 17px !important;
+    width: 17px !important;
+    min-width: 17px !important;
+    max-width: 17px !important;
+  }
+  .testing-evidence-icon-action .fp-icon {
+    width: 11px !important;
+    height: 11px !important;
+  }
+}
+
+
+/* v2.2.3 — compact scenario-row capture controls and aligned two-column evidence. */
+.testing-case-header-row .testing-case-collapse {
+  box-sizing: border-box !important;
+  padding: 0 0 0 4px !important;
+}
+.testing-case-header-row .testing-case-collapse-icon {
+  width: 14px !important;
+  height: 22px !important;
+}
+.testing-case-primary-line {
+  gap: 4px !important;
+}
+.testing-case-primary-line .testing-case-kicker {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+}
+.testing-case-primary-line .testing-case-capture-actions {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  flex: 0 0 auto !important;
+  gap: 1px !important;
+  min-width: 0 !important;
+}
+button.testing-case-icon-action.testing-case-inline-action {
+  width: 24px !important;
+  min-width: 24px !important;
+  max-width: 24px !important;
+  height: 24px !important;
+  min-height: 24px !important;
+  max-height: 24px !important;
+  padding: 0 !important;
+  display: grid !important;
+  place-items: center !important;
+  border: 0 !important;
+  border-radius: 6px !important;
+  background: transparent !important;
+  color: var(--fp-ui-text-secondary, var(--muted)) !important;
+  box-shadow: none !important;
+  flex: 0 0 24px !important;
+}
+button.testing-case-icon-action.testing-case-inline-action .fp-icon {
+  width: 15px !important;
+  height: 15px !important;
+  fill: currentColor !important;
+  color: inherit !important;
+}
+button.testing-case-icon-action.testing-case-inline-action:hover,
+button.testing-case-icon-action.testing-case-inline-action:focus-visible {
+  background: var(--fp-ui-hover, var(--surface-2, rgba(127,127,127,.10))) !important;
+  color: var(--fp-ui-text, var(--text)) !important;
+}
+.testing-case-primary-line .testing-status-control {
+  flex: 0 0 22px !important;
+  width: 22px !important;
+  margin-left: 0 !important;
+  padding: 0 !important;
+}
+.testing-case-primary-line .testing-status-indicator {
+  width: 22px !important;
+  min-width: 22px !important;
+  height: 22px !important;
+  min-height: 22px !important;
+}
+/* Keep the evidence thumbnails in two columns and place each timestamp and all actions on one row. */
+.testing-evidence-grid,
+.testing-general-evidence .testing-evidence-grid,
+.testing-case-content .testing-evidence-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 7px !important;
+}
+.testing-evidence-meta {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 3px !important;
+  padding: 4px 5px !important;
+  min-width: 0 !important;
+  overflow: visible !important;
+}
+.testing-evidence-time {
+  display: block !important;
+  flex: 0 1 auto !important;
+  min-width: 0 !important;
+  max-width: 48px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  font-size: 8px !important;
+  line-height: 14px !important;
+}
+.testing-evidence-actions,
+.testing-evidence-actions.is-evidence-only {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+  gap: 0 !important;
+  width: auto !important;
+  min-width: 0 !important;
+  flex: 0 0 auto !important;
+  overflow: visible !important;
+}
+.testing-evidence-icon-action,
+.testing-evidence-actions .testing-evidence-icon-action {
+  width: 22px !important;
+  min-width: 22px !important;
+  max-width: 22px !important;
+  height: 24px !important;
+  min-height: 24px !important;
+  padding: 0 !important;
+  flex: 0 0 22px !important;
+  border: 0 !important;
+  border-radius: 5px !important;
+  background: transparent !important;
+  color: var(--fp-ui-text-secondary, var(--muted)) !important;
+}
+.testing-evidence-icon-action .fp-icon {
+  width: 14px !important;
+  height: 14px !important;
+}
+.testing-evidence-icon-action:hover,
+.testing-evidence-icon-action:focus-visible {
+  background: var(--fp-ui-hover, var(--surface-2, rgba(127,127,127,.10))) !important;
+  color: var(--fp-ui-text, var(--text)) !important;
+}
+.testing-evidence-icon-action.danger:hover,
+.testing-evidence-icon-action.danger:focus-visible {
+  color: var(--fp-ui-danger, #c62828) !important;
+  background: var(--theme-danger-soft, rgba(198,40,40,.09)) !important;
+}
+@media (max-width: 380px) {
+  .testing-case-primary-line { gap: 2px !important; }
+  .testing-case-primary-line .testing-case-kicker { font-size: 9px !important; }
+  button.testing-case-icon-action.testing-case-inline-action,
+  .testing-case-primary-line .testing-status-indicator {
+    width: 21px !important; min-width: 21px !important; max-width: 21px !important;
+    height: 22px !important; min-height: 22px !important;
+  }
+  .testing-case-primary-line .testing-case-capture-actions { gap: 0 !important; }
+  .testing-case-primary-line .testing-status-control { flex-basis: 21px !important; width: 21px !important; }
+  .testing-evidence-time { max-width: 34px !important; font-size: 7px !important; }
+  .testing-evidence-icon-action,
+  .testing-evidence-actions .testing-evidence-icon-action {
+    width: 19px !important; min-width: 19px !important; max-width: 19px !important;
+    flex-basis: 19px !important;
+  }
+  .testing-evidence-actions { gap: 0 !important; }
+}
+
+/* v2.2.4 — edit header balance, stronger scenario labels, and wider result menu. */
+.testing-workspace-page .testing-header-actions.is-editing {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) !important;
+  grid-auto-rows: 38px !important;
+  gap: 5px !important;
+  width: 76px !important;
+  min-width: 76px !important;
+  max-width: 76px !important;
+  flex: 0 0 76px !important;
+  align-items: stretch !important;
+}
+.testing-workspace-page .testing-header-actions.is-editing .testing-header-action {
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  padding: 0 6px !important;
+  justify-content: center !important;
+  gap: 4px !important;
+  font-size: 11px !important;
+  line-height: 16px !important;
+}
+.testing-workspace-page .testing-header-actions.is-editing .testing-header-action .fp-icon {
+  width: 13px !important;
+  height: 13px !important;
+  flex: 0 0 13px !important;
+}
+.testing-workspace-page .testing-workspace-case-tools {
+  font-size: 12px !important;
+  line-height: 18px !important;
+  min-height: 36px !important;
+  padding: 8px 10px !important;
+}
+.testing-workspace-page .testing-workspace-case-tools > span {
+  font-size: 12px !important;
+  line-height: 18px !important;
+  font-weight: 600 !important;
+}
+.testing-workspace-page .testing-case-primary-line .testing-case-kicker {
+  font-size: 12px !important;
+  line-height: 18px !important;
+  font-weight: 600 !important;
+}
+.testing-workspace-page .testing-status-menu {
+  width: 184px !important;
+  min-width: 184px !important;
+  max-width: min(184px, calc(100vw - 28px)) !important;
+  padding: 6px !important;
+}
+.testing-workspace-page .testing-status-option {
+  min-height: 36px !important;
+  padding: 0 11px !important;
+  gap: 10px !important;
+  font-size: 12px !important;
+  line-height: 18px !important;
+}
+@media (max-width: 380px) {
+  .testing-workspace-page .testing-case-primary-line .testing-case-kicker {
+    font-size: 11px !important;
+    line-height: 17px !important;
+  }
+}
+
+
+/* v2.2.5 — keep inline session-name actions in one balanced row. */
+.testing-workspace-page .testing-header-actions.is-editing {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  grid-auto-rows: 38px !important;
+  gap: 6px !important;
+  width: 136px !important;
+  min-width: 136px !important;
+  max-width: 136px !important;
+  flex: 0 0 136px !important;
+  align-items: stretch !important;
+}
+.testing-workspace-page .testing-header-actions.is-editing .testing-header-action {
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100% !important;
+  height: 38px !important;
+  min-height: 38px !important;
+  max-height: 38px !important;
+  padding: 0 5px !important;
+  justify-content: center !important;
+  gap: 4px !important;
+  white-space: nowrap !important;
+  font-size: 11px !important;
+  line-height: 16px !important;
+}
+.testing-workspace-page .testing-header-actions.is-editing .testing-header-action .fp-icon {
+  width: 13px !important;
+  height: 13px !important;
+  flex: 0 0 13px !important;
+}
+@media (max-width: 380px) {
+  .testing-workspace-page .testing-header-actions.is-editing {
+    width: 124px !important;
+    min-width: 124px !important;
+    max-width: 124px !important;
+    flex-basis: 124px !important;
+    gap: 4px !important;
+  }
+  .testing-workspace-page .testing-header-actions.is-editing .testing-header-action {
+    padding: 0 3px !important;
+    gap: 3px !important;
+    font-size: 10px !important;
+  }
+}
+
+
+/* v2.3.0 — non-overlapping scenario workspace, viewport-aware status menu,
+   readable compact metadata, and visible keyboard focus. */
+.testing-workspace-page:not(.testing-evidence-only-page) {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  padding-bottom: 0 !important;
+}
+.testing-workspace-page:not(.testing-evidence-only-page) > .testing-topbar,
+.testing-workspace-page:not(.testing-evidence-only-page) > .testing-sticky-actions,
+.testing-workspace-page:not(.testing-evidence-only-page) > .testing-session-toolbar,
+.testing-workspace-page:not(.testing-evidence-only-page) > .testing-finish {
+  flex: 0 0 auto !important;
+  min-height: 0;
+}
+.testing-workspace-page:not(.testing-evidence-only-page) > .testing-sticky-actions {
+  position: static !important;
+  top: auto !important;
+  z-index: auto !important;
+  margin: 0 !important;
+  padding: 0 0 1px !important;
+  border: 0 !important;
+  background: transparent !important;
+}
+.testing-workspace-page:not(.testing-evidence-only-page) > .testing-session-toolbar {
+  margin: 0 !important;
+}
+.testing-workspace-scroll {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-gutter: auto;
+  padding: 0 1px 8px 0;
+}
+.testing-workspace-scroll > .testing-cases-card,
+.testing-workspace-scroll > .testing-general-evidence {
+  flex: 0 0 auto !important;
+  min-height: 0 !important;
+}
+.testing-workspace-scroll > .testing-cases-card {
+  overflow: hidden !important;
+}
+.testing-workspace-scroll > .testing-general-evidence {
+  overflow: hidden !important;
+}
+.testing-workspace-page:not(.testing-evidence-only-page) > .testing-finish {
+  position: static !important;
+  inset: auto !important;
+  margin-top: 0 !important;
+  box-shadow: none !important;
+}
+
+/* The menu is laid out against the side-panel viewport in JS. It flips above
+   or below its trigger according to the available space, rather than being
+   clipped by the scenario card or forcing the bottom row beyond the viewport. */
+.testing-workspace-page .testing-status-menu {
+  position: fixed !important;
+  z-index: 10000 !important;
+  top: 0;
+  right: auto !important;
+  bottom: auto !important;
+  left: 0;
+  visibility: hidden;
+  max-width: calc(100vw - 16px) !important;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  transform: none !important;
+}
+.testing-workspace-page .testing-status-indicator:focus-visible,
+.testing-workspace-page .testing-status-option:focus-visible,
+.testing-workspace-page .testing-case-collapse:focus-visible,
+.testing-workspace-page .testing-case-icon-action:focus-visible,
+.testing-workspace-page .testing-capture-button:focus-visible,
+.testing-workspace-page .testing-toolbar-button:focus-visible,
+.testing-workspace-page .testing-session-selector:focus-visible,
+.testing-workspace-page .testing-session-new-inline:focus-visible,
+.testing-workspace-page .testing-finish:focus-visible {
+  outline: 2px solid var(--fp-ui-blue, var(--accent)) !important;
+  outline-offset: 2px !important;
+}
+.testing-workspace-page .testing-status-indicator[aria-expanded="true"] {
+  background: var(--fp-ui-hover, var(--surface-2, rgba(127,127,127,.10)));
+}
+
+/* Keep compact text near the size used by the rest of the extension. */
+.testing-workspace-page .testing-workspace-case-tools,
+.testing-workspace-page .testing-workspace-case-tools > span {
+  font-size: 11px !important;
+  line-height: 16px !important;
+}
+.testing-workspace-page .testing-case-primary-line .testing-case-kicker {
+  font-size: 11px !important;
+  line-height: 16px !important;
+}
+.testing-workspace-page .testing-evidence-meta,
+.testing-workspace-page .testing-evidence-time {
+  font-size: 10px !important;
+  line-height: 14px !important;
+  min-height: 0 !important;
+}
+.testing-workspace-page .testing-evidence-time {
+  max-width: none !important;
+}
+.testing-workspace-page .testing-general-evidence-title small,
+.testing-workspace-page .testing-general-evidence-toggle small {
+  font-size: 10px !important;
+  line-height: 14px !important;
+}
+.testing-workspace-page .testing-status-option {
+  font-size: 12px !important;
+  line-height: 18px !important;
+}
+.testing-session-toolbar .testing-session-selector,
+.testing-session-toolbar .testing-session-new-inline {
+  font-size: 12px !important;
+}
+.testing-summary-stats span {
+  font-size: 11px !important;
+  line-height: 15px !important;
+}
+.testing-summary-ready {
+  margin: 0 auto 14px !important;
+}
+.testing-name-help {
+  font-size: 11px !important;
+  line-height: 16px !important;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+@media (max-width: 380px) {
+  .testing-workspace-page .testing-case-primary-line .testing-case-kicker {
+    font-size: 10px !important;
+    line-height: 15px !important;
+  }
+  .testing-workspace-page .testing-evidence-meta,
+  .testing-workspace-page .testing-evidence-time {
+    font-size: 10px !important;
+    line-height: 14px !important;
+  }
+}
+
+
+.testing-evidence-only-page .testing-general-evidence:has(.testing-empty-evidence) {
+  flex: 0 0 auto !important;
+  min-height: 0 !important;
+}
+.testing-evidence-only-page .testing-general-evidence:has(.testing-empty-evidence) .testing-general-evidence-body {
+  flex: 0 0 auto !important;
+  min-height: 0 !important;
+  overflow: visible !important;
+  padding-bottom: 8px !important;
+}
+
+
+.testing-workspace-page:not(.testing-evidence-only-page) .testing-cases-card,
+.testing-workspace-page:not(.testing-evidence-only-page) .testing-general-evidence {
+  border-radius: 8px !important;
+  border-color: var(--fp-ui-border, var(--border)) !important;
+  box-shadow: none !important;
+}
+.testing-workspace-page:not(.testing-evidence-only-page) .testing-session-toolbar .testing-session-selector,
+.testing-workspace-page:not(.testing-evidence-only-page) .testing-session-toolbar .testing-session-new-inline {
+  height: 36px !important;
+  min-height: 36px !important;
+}

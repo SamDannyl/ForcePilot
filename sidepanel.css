@@ -93,6 +93,10 @@ h2,.section-title-row h2{margin:0;font-size:16px;line-height:22px;font-weight:60
 
 /* Final polish: inline validation + accessible control borders */
 .recording-name-editor{display:flex;flex-direction:column;gap:6px}
+.recording-name-label-row{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;width:100%;white-space:nowrap}
+.recording-name-label-row>span{min-width:0;white-space:nowrap}
+.delete-recording-edit{flex:0 0 auto!important;width:auto!important;min-width:max-content!important;height:28px!important;min-height:28px!important;padding:0 7px!important;font-size:11px!important;line-height:15px!important;gap:4px!important;white-space:nowrap!important}
+.delete-recording-edit svg{width:14px;height:14px;flex:none}
 .edit-control.has-error{border-color:var(--danger);box-shadow:0 0 0 2px rgba(186,5,23,.10)}
 .name-error{font-size:12px;line-height:18px;color:var(--danger);font-weight:500}
 .name-error[hidden]{display:none}
@@ -924,10 +928,14 @@ html,body,button,input,select,textarea{font-family:var(--fp-font)!important}
 .result-row{
   display:grid!important;
   grid-template-columns:minmax(0,1fr) 82px 18px!important;
-  align-items:stretch!important;
+  align-items:start!important;
   column-gap:8px!important;
+  width:100%!important;
+  height:auto!important;
   min-height:52px!important;
+  flex:0 0 auto!important;
   padding:8px 10px!important;
+  overflow:visible!important;
 }
 .result-row-main{
   min-width:0!important;
@@ -944,9 +952,12 @@ html,body,button,input,select,textarea{font-family:var(--fp-font)!important}
 }
 .result-row-title{
   display:block!important;
-  overflow:hidden!important;
-  text-overflow:ellipsis!important;
-  white-space:nowrap!important;
+  min-height:18px!important;
+  overflow:visible!important;
+  text-overflow:clip!important;
+  white-space:normal!important;
+  overflow-wrap:anywhere!important;
+  word-break:break-word!important;
 }
 .result-row-value-line{
   display:block!important;
@@ -1099,7 +1110,7 @@ html,body,button,input,select,textarea{font-family:var(--fp-font)!important}
 .result-page{width:100%;overflow-x:clip}
 .result-section{width:100%;flex:1 1 auto;overflow:hidden}
 .result-list{display:flex;flex-direction:column;flex:1 1 auto;min-height:120px;max-height:max(120px,min(55dvh,480px));width:100%;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scrollbar-gutter:auto}
-.result-row{width:100%!important;grid-template-columns:minmax(0,1fr) minmax(60px,82px) 18px!important;overflow:hidden}
+.result-row{width:100%!important;grid-template-columns:minmax(0,1fr) minmax(60px,82px) 18px!important;overflow:visible!important;height:auto!important;min-height:52px!important;flex:0 0 auto!important;align-items:start!important}
 .result-row-title,.result-row-value,.result-row-reason{white-space:normal!important;overflow-wrap:anywhere!important;word-break:break-word}
 @media(max-width:390px){.result-row{grid-template-columns:minmax(0,1fr) minmax(56px,70px) 16px!important;column-gap:6px!important;padding-left:8px!important;padding-right:8px!important}.result-row-side{width:auto!important;min-width:0!important}.result-list{max-height:max(120px,min(52dvh,420px))}}
 html,body,#app,.shell,.content{width:100%;max-width:100%;min-width:0}
@@ -1445,3 +1456,310 @@ html[data-theme="dark"] .first-run-dialog{border-color:#2f3d4d;background:#18212
 html[data-theme="dark"] .first-run-shortcut{border-color:#31516b;background:#182b3b}
 html[data-theme="dark"] .first-run-shortcut span{color:#aebbc9}
 @media(max-width:390px){.first-run-dialog{padding:19px}.first-run-item{padding:9px 0}}
+
+/* Autofill result row alignment: title/value stay left, status/type stack on the right. */
+.result-row{
+  align-items:stretch!important;
+  min-height:0!important;
+  height:auto!important;
+}
+.result-row-main{
+  align-self:stretch!important;
+  min-width:0!important;
+  display:flex!important;
+  flex-direction:column!important;
+  justify-content:flex-start!important;
+  align-items:stretch!important;
+  gap:1px!important;
+}
+.result-row-title{
+  white-space:normal!important;
+  overflow:visible!important;
+  text-overflow:clip!important;
+  overflow-wrap:anywhere!important;
+  word-break:break-word!important;
+}
+.result-row-value-line{
+  min-width:0!important;
+  display:block!important;
+  margin-top:auto!important;
+}
+.result-row-value{
+  display:block!important;
+  min-width:0!important;
+  white-space:normal!important;
+  overflow:visible!important;
+  text-overflow:clip!important;
+  overflow-wrap:anywhere!important;
+  word-break:break-word!important;
+}
+.result-value-wrap{
+  width:100%!important;
+  display:flex!important;
+  align-items:flex-start!important;
+  gap:6px!important;
+  min-width:0!important;
+}
+.result-value-wrap .result-row-value{flex:1 1 auto!important;min-width:0!important}
+.result-row-side{
+  align-self:stretch!important;
+  min-width:0!important;
+  flex:0 0 auto!important;
+  display:flex!important;
+  flex-direction:column!important;
+  align-items:flex-end!important;
+  justify-content:space-between!important;
+  gap:4px!important;
+}
+.result-status-pill{flex:none!important}
+.result-type{
+  align-self:flex-end!important;
+  margin-top:auto!important;
+}
+.result-chevron{
+  align-self:flex-start!important;
+  margin-top:1px!important;
+}
+
+
+/* Phase 1.4: consistent icon-only back navigation across every sidebar page. */
+.backtop.backtop-icon-only{
+  display:inline-flex!important;align-items:center!important;justify-content:center!important;
+  box-sizing:border-box!important;width:36px!important;min-width:36px!important;max-width:36px!important;
+  height:36px!important;min-height:36px!important;padding:0!important;margin:0!important;
+  flex:0 0 36px!important;gap:0!important;border:1px solid transparent!important;border-radius:9px!important;
+  background:transparent!important;color:#0176d3!important;cursor:pointer!important;
+  transition:background-color .14s ease,border-color .14s ease,box-shadow .14s ease!important;
+}
+.backtop.backtop-icon-only .back-chevron-svg{display:block!important;width:24px!important;height:24px!important;flex:none!important;fill:none!important;color:inherit!important}
+.backtop.backtop-icon-only:hover{background:rgba(1,118,211,.09)!important;border-color:rgba(1,118,211,.12)!important}
+.backtop.backtop-icon-only:focus-visible{outline:2px solid #0176d3!important;outline-offset:2px!important}
+html[data-theme="dark"] .backtop.backtop-icon-only{color:#60b4ff!important}
+html[data-theme="dark"] .backtop.backtop-icon-only:hover{background:rgba(96,180,255,.12)!important;border-color:rgba(96,180,255,.18)!important}
+html[data-theme="dark"] .backtop.backtop-icon-only:focus-visible{outline-color:#60b4ff!important}
+
+
+/* Recorded field separators span the full outer list width; keep only the text inset. */
+.detail-fields{padding-left:0!important;padding-right:0!important}
+.field-list.detail-fields .field-row{padding-left:14px!important;padding-right:14px!important}
+
+
+/* Related-record creation workflow: one consistent disclosure component across recording,
+   recorded-fields, and Autofill results. Keep all user-facing copy label-based (never IDs). */
+.fp-create-workflow-details{display:block;width:100%;min-width:0;margin-top:8px;border:1px solid var(--mui-divider,var(--border));border-radius:9px;background:var(--surface-subtle,#f8fafc);overflow:hidden;cursor:default;text-align:left;}
+.fp-create-workflow-details>summary{list-style:none;display:flex;align-items:center;gap:9px;min-height:48px;padding:8px 10px;cursor:pointer;user-select:none;}
+.fp-create-workflow-details>summary::-webkit-details-marker{display:none}
+.fp-create-workflow-icon,.fp-live-create-icon{display:grid;place-items:center;width:30px;height:30px;flex:0 0 30px;border-radius:8px;background:color-mix(in srgb,var(--accent) 10%,white);color:var(--accent)}
+.fp-create-workflow-icon .fp-icon,.fp-live-create-icon .fp-icon{width:17px;height:17px;fill:currentColor}
+.fp-create-workflow-summary-copy{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1}
+.fp-create-workflow-summary-copy strong{font-size:12px;line-height:17px;font-weight:700;color:var(--text)}
+.fp-create-workflow-summary-copy small{font-size:11px;line-height:15px;color:var(--muted)}
+.fp-create-workflow-chevron{display:grid;place-items:center;color:var(--muted);transition:transform .14s ease;flex:none;transform:rotate(90deg)}
+.fp-create-workflow-chevron .fp-icon{width:16px;height:16px;fill:currentColor}
+.fp-create-workflow-details[open]>summary .fp-create-workflow-chevron{transform:rotate(-90deg)}
+.fp-create-workflow-body{padding:0 10px 10px;border-top:1px solid var(--mui-divider,var(--border-soft));}
+.fp-create-workflow-instruction{margin:9px 0;color:var(--text-secondary);font-size:11px;line-height:16px;}
+.fp-workflow-record-type{display:flex;flex-direction:column;gap:2px;margin:8px 0;padding:8px 9px;border-radius:7px;background:var(--surface,#fff);border:1px solid var(--border-soft);}
+.fp-workflow-record-type span{font-size:10px;line-height:14px;text-transform:uppercase;letter-spacing:.04em;font-weight:700;color:var(--muted)}
+.fp-workflow-record-type strong{font-size:12px;line-height:17px;font-weight:650;color:var(--text);overflow-wrap:anywhere}
+.fp-workflow-record-type.is-auto strong{font-weight:500;color:var(--text-secondary)}
+.fp-workflow-fields-heading{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:10px 0 5px;font-size:11px;line-height:16px;font-weight:700;color:var(--text-secondary)}
+.fp-workflow-fields-heading>span{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;border-radius:999px;background:var(--border-soft);color:var(--text-secondary);font-size:10px}
+.fp-workflow-fields{list-style:none;display:flex;flex-direction:column;gap:0;margin:0;padding:0}
+.fp-workflow-field{display:flex;align-items:flex-start;gap:8px;padding:8px 0;border-top:1px solid var(--border-soft);min-width:0}
+.fp-workflow-field-number{display:grid;place-items:center;width:21px;height:21px;flex:0 0 21px;border-radius:50%;background:#edf2f7;color:#526173;font-size:10px;font-weight:700}
+.fp-workflow-field-copy{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.fp-workflow-field-copy strong{font-size:12px;line-height:16px;font-weight:650;color:var(--text);overflow-wrap:anywhere}
+.fp-workflow-field-copy small{font-size:11px;line-height:15px;color:var(--text-secondary);overflow-wrap:anywhere;word-break:break-word}
+.fp-workflow-field-copy small span{color:var(--muted)}
+.fp-workflow-child-status{flex:none;font-size:10px;line-height:15px;font-weight:700;color:var(--muted)}
+.fp-workflow-field.is-done .fp-workflow-child-status{color:var(--success)}
+.fp-workflow-field.is-failed .fp-workflow-child-status,.fp-workflow-child-error{color:var(--danger)!important}
+.fp-workflow-field.is-skipped .fp-workflow-child-status{color:var(--warning)}
+.fp-workflow-empty{padding:8px 0;color:var(--muted);font-size:11px;line-height:16px}
+.fp-create-workflow-compact{display:flex;align-items:center;gap:7px;margin-top:7px;padding:6px 8px;border:1px solid var(--border-soft);border-radius:7px;background:var(--surface-subtle);}
+.fp-create-workflow-compact .fp-create-workflow-icon{width:24px;height:24px;flex-basis:24px;border-radius:6px}
+.fp-create-workflow-compact .fp-create-workflow-icon .fp-icon{width:14px;height:14px}
+.fp-create-workflow-compact>span:last-child{display:flex;flex-direction:column;gap:1px;min-width:0}
+.fp-create-workflow-compact strong{font-size:11px;line-height:15px;color:var(--text)}
+.fp-create-workflow-compact small{font-size:10px;line-height:14px;color:var(--muted);overflow-wrap:anywhere}
+.fp-live-create-status{display:flex;align-items:flex-start;gap:10px;margin:8px 0 10px;padding:11px;border:1px solid color-mix(in srgb,var(--accent) 24%,var(--border));border-radius:10px;background:color-mix(in srgb,var(--accent) 5%,var(--surface));}
+.fp-live-create-icon{width:34px;height:34px;flex-basis:34px}
+.fp-live-create-copy{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
+.fp-live-create-title{font-size:12px;line-height:17px;font-weight:750;color:var(--text)}
+.fp-live-create-context{font-size:11px;line-height:15px;color:var(--text-secondary);overflow-wrap:anywhere}
+.fp-live-create-stage{margin-top:3px;font-size:11px;line-height:15px;font-weight:650;color:var(--accent)}
+.fp-live-create-recordtype,.fp-live-create-count{font-size:10px;line-height:14px;color:var(--muted);overflow-wrap:anywhere}
+.fp-live-create-recordtype strong{font-weight:700;color:var(--text-secondary)}
+.recording-live-row .fp-create-workflow-details{margin-top:7px}
+.result-row .fp-create-workflow-details{grid-column:1/-1;margin-top:8px;cursor:default}
+.result-row .fp-create-workflow-details>summary{min-height:44px}
+.field-row .field-main{min-width:0}
+[data-lookup-create-details]>summary:focus-visible{outline:2px solid var(--mui-focus,var(--accent));outline-offset:-2px;border-radius:7px}
+@media(prefers-reduced-motion:reduce){.fp-create-workflow-chevron{transition:none}}
+
+
+/* v2.2.21 related-record workflow editing and narrow-panel polish */
+.fp-create-workflow-details{box-sizing:border-box;max-width:100%;margin:7px 0 2px;cursor:default}
+.fp-create-workflow-details>summary{box-sizing:border-box;gap:8px;padding:8px 9px;min-width:0}
+.fp-create-workflow-summary-copy strong,.fp-create-workflow-summary-copy small{overflow-wrap:anywhere;word-break:break-word}
+.fp-create-workflow-body{box-sizing:border-box;min-width:0;padding:0 9px 9px}
+.fp-create-workflow-instruction{margin:7px 0;font-size:11px;line-height:15px}
+.fp-workflow-record-type{box-sizing:border-box;min-width:0;margin:7px 0;padding:7px 8px;gap:3px}
+.fp-workflow-record-type .edit-control{box-sizing:border-box;width:100%;max-width:100%;min-width:0;flex:none;margin-top:2px}
+.fp-workflow-fields-heading{margin:8px 0 4px}
+.fp-workflow-field-editing{gap:7px;align-items:flex-start;padding:8px 0}
+.fp-workflow-field-editing .fp-workflow-field-copy{gap:5px}
+.fp-workflow-child-editor{display:flex;flex-direction:column;min-width:0;width:100%;max-width:100%}
+.fp-workflow-child-editor>.edit-control,.fp-workflow-child-editor>.multi-editor{box-sizing:border-box;width:100%;max-width:100%;min-width:0;flex:none}
+.fp-workflow-field-editing .fp-workflow-delete-child{width:28px;height:28px;margin-top:1px}
+.fp-workflow-field-editing .fp-workflow-field-number{margin-top:4px}
+.field-row.editing .field-main,.field-row.editing .edit-wrap{min-width:0;max-width:100%;box-sizing:border-box}
+.field-row.editing .fp-create-workflow-details{margin-left:0;margin-right:0}
+.result-row.result-row-has-workflow{grid-template-columns:minmax(0,1fr) 18px!important;align-items:start!important;column-gap:7px!important;padding:8px 9px!important}
+.result-row.result-row-has-workflow>.result-row-main{grid-column:1;grid-row:1;min-width:0;width:100%;max-width:100%}
+.result-row.result-row-has-workflow>.result-chevron{grid-column:2;grid-row:1;align-self:start;margin-top:1px}
+.result-row.result-row-has-workflow .result-row-line1{display:flex!important;align-items:flex-start;justify-content:space-between;gap:7px;min-width:0}
+.result-row.result-row-has-workflow .result-row-title{min-width:0;flex:1;white-space:normal!important;overflow-wrap:anywhere;word-break:break-word}
+.result-row.result-row-has-workflow .result-status-pill{flex:0 0 auto;margin-top:0}
+.result-row.result-row-has-workflow .fp-create-workflow-details{width:100%;max-width:100%;margin-top:7px}
+.result-row.result-row-has-workflow .fp-create-workflow-details>summary{min-width:0}
+.result-row.result-row-has-workflow .fp-workflow-field-copy{overflow-wrap:anywhere}
+@media(max-width:390px){.result-row.result-row-has-workflow{grid-template-columns:minmax(0,1fr) 16px!important;padding:8px!important}.result-row.result-row-has-workflow .fp-create-workflow-body{padding-left:8px;padding-right:8px}}
+
+/* Keep related-record workflows visually nested under their parent field without the unused row chevron gutter. */
+.field-row:has(> .field-main > .fp-create-workflow-details)>.row-chevron{display:none!important}
+.field-row:has(> .field-main > .fp-create-workflow-details)>.field-main{padding-right:0!important}
+.fp-result-workflow-meta{display:inline-flex;align-items:center;align-self:flex-start;max-width:100%;margin:2px 0 1px;padding:2px 6px;border:1px solid color-mix(in srgb,var(--accent) 22%,var(--border));border-radius:5px;background:color-mix(in srgb,var(--accent) 5%,var(--surface));color:var(--text-secondary);font-size:10px;line-height:14px;font-weight:650;overflow-wrap:anywhere}
+.fp-create-workflow-details.is-editing{background:var(--surface-subtle,#f8fafc)}
+.fp-create-workflow-details.is-editing .fp-create-workflow-instruction{display:none}
+.fp-workflow-record-type-input,.fp-workflow-record-type-select{display:block}
+
+/* Compact per-field randomization controls, using the existing ForcePilot surface,
+   border and accent tokens. The editor is part of each field row, not a separate tool. */
+.fp-randomization-editor{box-sizing:border-box;width:100%;min-width:0;margin:7px 0 2px;border:1px solid var(--border-soft);border-radius:8px;background:var(--surface,#fff);overflow:hidden;color:var(--text)}
+.fp-randomization-heading{box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:36px;padding:6px 9px;background:var(--surface,#fff)}
+.fp-randomization-heading:hover{background:var(--surface-subtle,#f7f9fb)}
+.fp-randomization-heading-title{display:block;flex:1;min-width:0;font-size:12px;line-height:17px;font-weight:650;color:var(--text);cursor:default;user-select:none}
+.fp-randomization-editor.is-enabled .fp-randomization-heading-title{cursor:pointer}
+.fp-randomization-heading-title:focus-visible{outline:2px solid var(--mui-focus,var(--accent));outline-offset:3px;border-radius:3px}
+.fp-random-switch{position:relative;display:inline-flex;align-items:center;flex:0 0 auto;padding:2px;cursor:pointer;touch-action:manipulation}
+.fp-random-switch input{position:absolute;width:1px;height:1px;margin:0;padding:0;opacity:0}
+.fp-random-switch-track{box-sizing:border-box;display:block;position:relative;width:32px;height:18px;border:1px solid var(--border,#c9d2dc);border-radius:999px;background:var(--surface-subtle,#edf1f5);transition:background .15s,border-color .15s}
+.fp-random-switch-track>span{position:absolute;left:2px;top:2px;width:12px;height:12px;border-radius:50%;background:#fff;box-shadow:0 1px 2px #0002;transition:transform .15s}
+.fp-random-switch input:checked+.fp-random-switch-track{border-color:var(--accent);background:var(--accent)}
+.fp-random-switch input:checked+.fp-random-switch-track>span{transform:translateX(14px)}
+.fp-random-switch input:focus-visible+.fp-random-switch-track{outline:2px solid var(--mui-focus,var(--accent));outline-offset:2px}
+.fp-random-switch input:disabled+.fp-random-switch-track{opacity:.55;cursor:not-allowed}
+.fp-randomization-body{display:flex;flex-direction:column;gap:8px;min-width:0;padding:9px;border-top:1px solid var(--border-soft);background:var(--surface-subtle,#f8fafc)}
+.fp-randomization-editor.is-collapsed .fp-randomization-body{display:none}
+.fp-random-field{display:flex;flex-direction:column;gap:4px;min-width:0;font-size:11px;line-height:15px;color:var(--text-secondary);font-weight:600}
+.fp-random-field .edit-control{box-sizing:border-box;width:100%;max-width:100%;min-width:0;min-height:34px!important;height:34px!important;padding:5px 8px!important;font-size:12px;line-height:18px;font-weight:400;background:var(--surface,#fff)}
+.fp-random-strategy{gap:4px}
+.fp-random-strategy select{font-weight:600}
+.fp-random-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:7px}
+.fp-random-grid-two{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.fp-random-options{display:flex;flex-direction:column;gap:7px;min-width:0}
+.fp-random-help{margin:0;color:var(--muted);font-size:10.5px;line-height:14px;overflow-wrap:anywhere}
+.fp-random-allowed-options{border:1px solid var(--border-soft);border-radius:7px;background:var(--surface,#fff);overflow:hidden}
+.fp-random-allowed-options>summary{padding:7px 8px;cursor:pointer;font-size:11px;line-height:15px;font-weight:600;color:var(--text-secondary);list-style:none}
+.fp-random-allowed-options>summary::-webkit-details-marker{display:none}
+.fp-random-allowed-options>summary span{font-weight:400;color:var(--muted)}
+.fp-random-allowed-options>div{display:flex;flex-direction:column;gap:1px;max-height:112px;overflow:auto;padding:3px 8px 7px;border-top:1px solid var(--border-soft)}
+.fp-random-allowed-options label{display:flex;align-items:center;gap:7px;padding:3px 0;font-size:11px;line-height:15px;color:var(--text-secondary);cursor:pointer}
+.fp-random-allowed-options input{flex:0 0 auto;margin:0;accent-color:var(--accent)}
+.fp-random-allowed-options label span{overflow-wrap:anywhere}
+.fp-random-unique{display:flex;align-items:center;gap:7px;min-width:0;font-size:10.5px;line-height:15px;color:var(--text-secondary);cursor:pointer}
+.fp-random-unique input{width:14px;height:14px;flex:0 0 14px;margin:0;accent-color:var(--accent)}
+.fp-random-preview{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;padding:7px 8px;border:1px solid var(--border-soft);border-radius:7px;background:var(--surface,#fff)}
+.fp-random-preview>div{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.fp-random-preview-label{font-size:9px;line-height:11px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.fp-random-preview output{font-size:12px;line-height:16px;color:var(--text);overflow-wrap:anywhere;word-break:break-word}
+.fp-random-preview-button{display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;min-height:26px;padding:3px 8px;border:1px solid var(--border);border-radius:6px;background:var(--surface,#fff);color:var(--accent);font-size:10.5px;line-height:14px;font-weight:600;cursor:pointer}
+.fp-random-preview-button:hover:not(:disabled){background:color-mix(in srgb,var(--accent) 6%,var(--surface));border-color:color-mix(in srgb,var(--accent) 30%,var(--border))}
+.fp-random-preview-button:disabled{opacity:.5;cursor:not-allowed}
+.fp-random-error{margin:0;padding:6px 8px;border:1px solid color-mix(in srgb,var(--danger) 30%,var(--border));border-radius:6px;background:color-mix(in srgb,var(--danger) 5%,var(--surface));color:var(--danger);font-size:11px;line-height:15px;font-weight:500}
+.fp-random-input[aria-invalid="true"]{border-color:var(--danger)!important;box-shadow:0 0 0 1px color-mix(in srgb,var(--danger) 20%,transparent)}
+.fp-randomized-value{display:inline-flex;align-items:center;max-width:100%;margin:0;padding:1px 6px;border:1px solid color-mix(in srgb,var(--accent) 22%,var(--border));border-radius:999px;background:color-mix(in srgb,var(--accent) 6%,var(--surface));color:var(--accent);font-size:10px;line-height:15px;font-weight:650;white-space:nowrap}
+.fp-live-child-randomizers{margin:7px 0 2px;border:1px solid var(--border-soft);border-radius:8px;background:var(--surface-subtle,#f8fafc);overflow:hidden}
+.fp-live-child-randomizers>summary{display:flex;align-items:center;gap:8px;min-height:32px;padding:6px 9px;list-style:none;cursor:pointer}
+.fp-live-child-randomizers>summary::-webkit-details-marker{display:none}
+.fp-live-child-randomizers>summary>span:first-child{flex:1;min-width:0;font-size:11px;line-height:16px;font-weight:650;color:var(--text-secondary)}
+.fp-live-child-randomizers>summary>small{font-size:10px;line-height:14px;color:var(--muted)}
+.fp-live-child-randomizers-body{display:flex;flex-direction:column;gap:7px;padding:0 8px 8px;border-top:1px solid var(--border-soft)}
+.fp-live-child-randomizer{padding-top:7px;min-width:0}
+.fp-live-child-label{font-size:11px;line-height:15px;font-weight:650;color:var(--text-secondary);overflow-wrap:anywhere}
+.fp-live-child-randomizer .fp-randomization-editor{margin-top:5px}
+.fp-live-child-randomizer .fp-randomization-body{padding:8px}
+@media(max-width:390px){.fp-randomization-body{padding:8px;gap:7px}.fp-randomization-heading{padding:6px 8px}.fp-random-preview{gap:6px}.fp-random-preview-button{padding:3px 7px}}
+@media(prefers-reduced-motion:reduce){.fp-random-switch-track,.fp-random-switch-track>span{transition:none}}
+
+/* Give field randomization its own full-width row in the existing inline editor. */
+.edit-wrap{flex-wrap:wrap;align-items:flex-start}
+.edit-wrap>.fp-randomization-editor{flex:1 1 100%;width:100%;max-width:100%;margin-top:2px}
+.edit-wrap>.delete-step{margin-left:auto}
+.result-value-wrap{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0;max-width:100%}
+.result-row-value{overflow-wrap:anywhere;word-break:break-word}
+
+/* Final randomization polish: compact controls, plain status text, left-aligned results. */
+.fp-randomization-heading{min-height:33px!important;padding:5px 8px!important}
+.fp-randomization-body{gap:6px!important;padding:8px!important}
+.fp-random-field{gap:3px!important;line-height:14px!important}
+.fp-random-field .edit-control{height:30px!important;min-height:30px!important;padding:4px 7px!important;font-size:11.5px!important;line-height:16px!important;border-radius:7px!important}
+.fp-random-grid-small-inputs{width:100%!important;max-width:246px!important;grid-template-columns:repeat(2,minmax(0,1fr))!important;column-gap:8px!important;row-gap:6px!important}
+.fp-random-grid-small-inputs .fp-random-field{min-width:0!important}
+.fp-random-grid-small-inputs .fp-random-input{width:100%!important;max-width:100%!important}
+.fp-randomized-value{display:inline!important;max-width:100%!important;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important;color:var(--accent,#1976d2)!important;font-size:11px!important;line-height:15px!important;font-weight:600!important;white-space:nowrap!important}
+.result-row-main .result-row-value-line,
+.result-row-main .result-value-wrap,
+.result-row-main .result-row-value{align-self:flex-start!important;text-align:left!important;margin-left:0!important}
+.result-row-main .result-row-value-line{display:block!important;width:100%!important}
+.result-row-main .result-value-wrap{display:flex!important;flex-direction:row!important;justify-content:flex-start!important;align-items:flex-start!important;width:100%!important;max-width:100%!important}
+.result-row-main .result-row-value{display:block!important;flex:0 1 auto!important;min-width:0!important;max-width:100%!important;text-align:left!important}
+
+.fp-random-warning{margin:0;color:var(--text-muted,#667085);font-size:11px;line-height:16px}
+
+/* v2.2.28: tighter live recording and field randomization controls. */
+.content:has(#recording-field-list){gap:6px!important}
+#recording-note.is-hidden,#lookup-create-capture-status:empty{display:none!important}
+#recording-field-list{margin-top:0!important;padding-top:0!important;justify-content:flex-start!important;align-content:flex-start!important}
+.fp-random-grid-numeric{display:grid!important;gap:4px!important;width:100%!important;max-width:100%!important;min-width:0!important;align-items:end!important}
+.fp-random-grid-numeric-3{grid-template-columns:repeat(3,minmax(0,1fr))!important}
+.fp-random-grid-numeric-4{grid-template-columns:repeat(4,minmax(0,1fr))!important}
+.fp-random-grid-numeric .fp-random-field{min-width:0!important;gap:2px!important}
+.fp-random-grid-numeric .fp-random-field>span{font-size:10px!important;line-height:13px!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}
+.fp-random-grid-numeric .fp-random-input{padding:3px 5px!important;font-size:11px!important;min-width:0!important;width:100%!important}
+.fp-random-check{display:flex;align-items:center;gap:6px;min-height:26px;font-size:11px;line-height:16px;color:var(--text-secondary);white-space:nowrap}
+.fp-random-check input{accent-color:var(--accent);flex:none}
+.fp-random-grid-date{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:6px!important;align-items:end!important}
+.fp-random-grid-date .fp-random-check{grid-column:1/-1}
+.fp-field-name-row{display:flex;align-items:center;gap:8px;min-width:0;width:100%}
+.fp-field-name-row .field-name{flex:1;min-width:0}
+.fp-field-name-row .delete-step{width:28px!important;height:28px!important;min-width:28px!important;flex:0 0 28px!important;margin:0 0 0 auto!important}
+
+/* Keep the live field list immediately under recording controls; the static hint
+   is unnecessary once recording begins and should not reserve vertical space. */
+.content:has(#recording-field-list) > #recording-note{display:none!important;height:0!important;max-height:0!important;min-height:0!important;margin:0!important;padding:0!important}
+.content:has(#recording-field-list) > #lookup-create-capture-status:empty{display:none!important;height:0!important;min-height:0!important;margin:0!important;padding:0!important}
+.content:has(#recording-field-list) > #lookup-create-capture-status:not(:empty){flex:0 0 auto!important;margin:0!important;padding:0!important}
+#recording-field-list>.recording-live-row:first-child{margin-top:0!important}
+
+/* v2.2.30: compact, single-row Today +/- days controls. */
+.fp-random-relative-date-row{display:grid;grid-template-columns:auto 42px minmax(44px,64px) auto;align-items:center;gap:6px;min-width:0;width:max-content;max-width:100%}
+.fp-random-relative-date-row .fp-random-input{box-sizing:border-box;width:100%;min-width:0;height:30px!important;min-height:30px!important;max-height:30px!important;padding:4px 6px!important;font-size:11.5px!important;line-height:16px!important;border-radius:7px!important}
+.fp-random-relative-days{font-size:11px;line-height:16px;color:var(--text-secondary);white-space:nowrap}
+.recording-name-label-row>label{font-size:13px;line-height:18px;font-weight:600;color:var(--text);white-space:nowrap}
+
+
+/* Header theme toggle follows the same neutral resting state and hover/active
+   states as Refresh and Settings; the enabled state is not a selected pill. */
+.header-actions .theme-toggle-btn[aria-pressed="true"]:not(:hover):not(:active) {
+  color: #5f6368 !important;
+  background: transparent !important;
+}
+.header-actions .theme-toggle-btn .fp-dark-mode-icon {
+  width: 20px !important;
+  height: 20px !important;
+  fill: none !important;
+  overflow: visible;
+}

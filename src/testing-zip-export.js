@@ -93,7 +93,7 @@ export async function buildTestingEvidenceZip(session, evidenceBlobs, { onProgre
 }
 
 export function getTestingZipFilename(session) {
-  const raw = sanitizeFilename(session?.workProduct);
+  const raw = sanitizeFilename(String(session?.exportFilename || session?.workProduct || session?.sessionName || '').replace(/\.(?:docx|zip)$/i, ''));
   if (raw) return `${raw}.zip`;
   const stamp = new Date().toISOString().replace(/[:]/g, '-').replace(/\.\d{3}Z$/, 'Z');
   return `ForcePilot-Test-Evidence-${stamp}.zip`;

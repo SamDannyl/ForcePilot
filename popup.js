@@ -40,15 +40,35 @@ import { applyTheme, watchTheme } from './src/theme.js';
       updateTheme(toggle.checked);
       await saveSettings(settings);
     });
+    document.querySelector('.theme-row')?.addEventListener('click',event=>{
+      if(event.target.closest('label, input')) return;
+      toggle.checked=!toggle.checked;
+      toggle.dispatchEvent(new Event('change',{bubbles:true}));
+    });
   }
 
   const tabs=await chrome.tabs.query({active:true,currentWindow:true});
   const tab=tabs[0];
+  // Keep this list aligned with background.js and the supported enhanced-domain
+  // patterns from Salesforce Help. Experience Cloud custom domains are opt-in
+  // through Options and are persisted in the shared settings object.
+  const salesforceSuffixes=[
+    'salesforce.com','lightning.force.com','my.salesforce.com','visualforce.com','vf.force.com',
+    'force.com','site.com','salesforce-sites.com','salesforce-communities.com',
+    'salesforce-setup.com','salesforce-experience.com','salesforce.app',
+    'forceusercontent.com','force-user-content.com','salesforce-scrt.com'
+  ];
+  const configuredDomains=Array.isArray(settings.experienceCloudDomains)?settings.experienceCloudDomains:[];
   let isSalesforce=false;
   try{
     const u=new URL(tab?.url||'');
-    const hosts=['salesforce.com','lightning.force.com','my.salesforce.com','visualforce.com','vf.force.com'];
-    isSalesforce=u.protocol==='https:'&&hosts.some(s=>u.hostname===s||u.hostname.endsWith('.'+s));
+    const host=u.hostname.toLowerCase();
+    const standard=salesforceSuffixes.some(s=>host===s||host.endsWith('.'+s));
+    const custom=configuredDomains.some(raw=>{
+      const domain=String(raw||'').trim().toLowerCase().replace(/^https?:\/\//,'').split(/[\/?#]/)[0].replace(/^\*\./,'').replace(/:\d+$/,'').replace(/\.$/,'');
+      return !!domain&&(host===domain||host.endsWith('.'+domain));
+    });
+    isSalesforce=u.protocol==='https:'&&(standard||custom);
   }catch{}
 
   if(isSalesforce){
