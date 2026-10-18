@@ -1,24 +1,28 @@
 # Publish the ForcePilot product tour
 
-The interactive tour is a static website at `docs/marketing/`. It has no build step and loads its screenshots and brand assets from `docs/marketing/assets/`.
+The interactive product tour is a static website stored at `docs/marketing/`. It has no build step and uses local assets from `docs/marketing/assets/`.
 
 ## Enable GitHub Pages
 
 1. Push the repository to GitHub.
-2. Open **Settings → Pages**.
+2. Open the repository's **Settings → Pages** page.
 3. Under **Build and deployment**, choose **Deploy from a branch**.
-4. Select the default branch and the `/docs` folder, then save.
-5. Wait for the Pages deployment to complete.
+4. Select the default branch and the `/docs` folder, then click **Save**.
+5. Wait for the first deployment to finish. GitHub may take a few minutes to publish a new Pages site.
 
-The expected address for this repository is <https://samdannyl.github.io/ForcePilot/marketing/>. Use the URL shown in the Pages settings if your repository settings differ.
+For the `SamDannyl/ForcePilot` repository, the expected address is:
 
-## Tour features
+<https://samdannyl.github.io/ForcePilot/marketing/>
 
-- A vertical feature rail on desktop and a horizontally scrollable feature menu on small screens.
-- Seven features in this order: Saved recordings, Randomization, Recorded fields, Autofill results, Testing sessions, Testing workspace, and Evidence export.
+Use the URL shown by GitHub Pages if your repository or Pages settings differ.
+
+## What the tour includes
+
+- A vertical feature rail on desktop and a horizontally scrollable feature menu on narrow screens.
+- Seven synchronized feature descriptions and screenshots, in this order: Saved recordings, Randomization, Recorded fields, Autofill results, Testing sessions, Testing workspace, and Evidence export.
 - Previous/next controls, touch swipe, and left/right keyboard navigation.
-- Local image and brand assets; no external JavaScript library or build pipeline is required.
+- Local images and brand assets; no remote JavaScript library or build pipeline is required.
 
-The page's JavaScript runs on the published site. GitHub README Markdown shows screenshots but does not run the interactive tour.
+The GitHub README also includes a static screenshot gallery. The interactive tour must be opened from the published Pages site because GitHub README Markdown does not run the page's JavaScript.
 
 Official guide: <https://docs.github.com/en/pages/getting-started-with-github-pages/creating-a-github-pages-site>

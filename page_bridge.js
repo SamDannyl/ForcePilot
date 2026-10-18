@@ -9,9 +9,9 @@
 (()=>{
   'use strict';
   if(window.__FORCEPILOT_BRIDGE_READY__) return;
+  const HOST_RE=/^(?:[^.]+\.)*(?:salesforce\.com|visualforce\.com|vf\.force\.com|lightning\.force\.com|my\.salesforce\.com|force\.com|site\.com|salesforce-sites\.com|salesforce-communities\.com|salesforce-setup\.com|salesforce-experience\.com|salesforce\.app|forceusercontent\.com|force-user-content\.com|salesforce-scrt\.com)$/i;
+  if(!HOST_RE.test(location.hostname)&&window.__FORCEPILOT_CUSTOM_EXPERIENCE_DOMAIN__!==true) return;
   window.__FORCEPILOT_BRIDGE_READY__=true;
-  const HOST_RE=/^(?:[^.]+\.)*(?:salesforce\.com|visualforce\.com|vf\.force\.com|lightning\.force\.com|my\.salesforce\.com)$/i;
-  if(!HOST_RE.test(location.hostname)) return;
   const BUILD='2.0';
   const capabilityChallenges=new Map();
   const requests=new Set();
@@ -57,10 +57,16 @@
   function allowedTarget(el){
     if(!el)return false;
     const tag=String(el.tagName||'').toLowerCase();
-    if(/^(lightning-dual-listbox|lightning:dualListbox|lightning-combobox|lightning-base-combobox|lightning-input-field|lightning-lookup|lightning-record-picker)$/.test(tag))return true;
+    if(/^(lightning-dual-listbox|lightning:dualListbox|lightning-combobox|lightning-base-combobox|lightning-input-field|lightning-lookup|lightning-record-picker|select)$/.test(tag))return true;
+    try{if(el.matches?.('button[role="combobox"],input[role="combobox"],[role="combobox"],button[aria-haspopup="listbox"],input[aria-haspopup="listbox"],[aria-haspopup="listbox"]')&&!el.closest?.('lightning-lookup,lightning-record-picker,lightning-base-combobox[data-lookup]'))return true;}catch{}
     try{
       if(el.closest?.('lightning-dual-listbox,lightning-combobox,lightning-base-combobox,lightning-input-field,lightning\\:dualListbox'))return true;
       if(el.querySelector?.('lightning-combobox,lightning-base-combobox,lightning-dual-listbox,lightning-lookup,lightning-record-picker'))return true;
+      // A field wrapper may contain a bare Aura combobox without a Lightning host.
+      const triggerSelector='button[role="combobox"],input[role="combobox"],[role="combobox"],button[aria-haspopup="listbox"],input[aria-haspopup="listbox"],[aria-haspopup="listbox"]';
+      const hasTrigger=el.matches?.(triggerSelector)||el.querySelector?.(triggerSelector);
+      const hasLookup=el.matches?.('lightning-lookup,lightning-record-picker,lightning-base-combobox[data-lookup]')||el.querySelector?.('lightning-lookup,lightning-record-picker,lightning-base-combobox[data-lookup]');
+      if(hasTrigger&&!hasLookup)return true;
     }catch{return false;}
     return false;
   }
@@ -207,10 +213,13 @@
 
   function comboTrigger(root){
     if(!root)return null;
+    const selector='button[role="combobox"],input[role="combobox"],[role="combobox"],button[aria-haspopup="listbox"],input[aria-haspopup="listbox"],[aria-haspopup="listbox"]';
+    try{if(root.matches?.(selector))return root;}catch{}
     const roots=rootsFor(root);
     for(const r of roots){
       try{
-        const x=r.querySelector?.('button[role="combobox"],input[role="combobox"],[role="combobox"]');
+        if(r.matches?.(selector))return r;
+        const x=r.querySelector?.(selector);
         if(x)return x;
       }catch{}
     }
@@ -337,30 +346,83 @@
   }
   function lookupRecordId(el){
     if(!el)return '';
-    for(const a of ['data-record-id','data-recordid','data-record-id-value','data-id','record-id','data-lookup-id','data-selection-id']){
+    for(const a of ['data-record-id','data-recordid','data-record-id-value','data-id','record-id','data-lookup-id','data-selection-id','data-value','value']){
       try{const v=el.getAttribute?.(a);if(v&&/^[A-Za-z0-9]{15,18}$/.test(String(v).trim()))return String(v).trim();}catch{}
     }
     try{
       const href=el.getAttribute?.('href')||el.querySelector?.('a[href*="/lightning/r/"]')?.getAttribute?.('href')||'';
       const m=String(href).match(/\/lightning\/r\/[^/]+\/([A-Za-z0-9]{15,18})(?:\/|$)/i);
       return m?.[1]||'';
-    }catch{return ''}
+    }catch{return '';}
+  }
+  function canonicalLookupOption(el){
+    if(!el)return null;
+    let node=el,option=null,base=null;
+    for(let depth=0;node&&depth<12;depth++){
+      const tag=String(node.tagName||'').toLowerCase();
+      if(tag==='lightning-base-combobox-item')base=node;
+      if(!option&&(node.getAttribute?.('role')==='option'||node.matches?.('.slds-listbox__option,.slds-listbox__item,[data-option-index]')))option=node;
+      if(tag==='lightning-base-combobox-item')break;
+      let parent=node.parentElement;
+      if(!parent){try{parent=node.getRootNode?.()?.host||null}catch{parent=null}}
+      node=parent;
+    }
+    return base||option||el;
+  }
+  const lookupDropdownCache=new Map();
+  function lookupControlledDropdown(root,input=lookupInput(root)){
+    const ids=[input?.getAttribute?.('aria-controls')].filter(Boolean);
+    for(const id of ids){
+      const cached=lookupDropdownCache.get(id);if(cached?.isConnected)return cached;
+      lookupDropdownCache.delete(id);
+      const selector=`#${CSS.escape(String(id))}`;
+      try{const direct=document.getElementById(id);if(direct){lookupDropdownCache.set(id,direct);return direct;}}catch{}
+      // Prefer the lookup's own roots first. Only search the whole page if the
+      // popup is rendered in a portal outside its component tree.
+      for(const scopes of [rootsFor(root),rootsFor(document)]){
+        let found=null;
+        for(const r of scopes){
+          try{if(r?.id===id){found=r;break;}found=r.querySelector?.(selector)||null;if(found)break;}catch{}
+        }
+        if(found){lookupDropdownCache.set(id,found);return found;}
+      }
+    }
+    return null;
   }
   function lookupOptions(root){
-    const out=[],seen=new Set();
-    const input=lookupInput(root);
-    const roots=[];
-    const addRoot=x=>{if(x&& !roots.includes(x))roots.push(x)};
-    for(const r of rootsFor(root))addRoot(r);
-    const id=input?.getAttribute?.('aria-controls');
-    if(id){try{addRoot(document.getElementById(id));}catch{}for(const r of rootsFor(root)){try{addRoot(r.querySelector?.(`#${CSS.escape(id)}`));}catch{}}}
-    addRoot(document);
-    const add=el=>{if(!el||seen.has(el))return;const rect=el.getBoundingClientRect?.();if(!rect||rect.width<=0||rect.height<=0)return;const label=norm(el.getAttribute?.('data-label')||el.getAttribute?.('label')||el.getAttribute?.('title')||readable(el));if(!label||/^(show all results|create new|recent records|search all)$/i.test(label))return;seen.add(el);out.push({el,label,id:lookupRecordId(el)});};
-    for(const r of roots){try{r.querySelectorAll?.('[role="option"],lightning-base-combobox-item,.slds-listbox__option,.slds-listbox__item,[data-option-index]').forEach(add);}catch{}}
-    return out;
+    const raw=[],seenNodes=new Set(),input=lookupInput(root),controlled=lookupControlledDropdown(root,input);
+    // Scope to the dropdown owned by this lookup, rather than sibling fields or
+    // unrelated visible dropdowns elsewhere on the Salesforce record form.
+    const roots=controlled?[controlled]:rootsFor(root);
+    const add=el=>{
+      if(!el)return;const node=canonicalLookupOption(el);if(!node||seenNodes.has(node))return;
+      if(node.getAttribute?.('role')==='presentation')return;
+      const tag=String(node.tagName||'').toLowerCase();
+      if(tag!=='lightning-base-combobox-item'&&node.getAttribute?.('role')!=='option'&&!node.matches?.('.slds-listbox__option[aria-selected],.slds-listbox__option[data-value]'))return;
+      const rect=node.getBoundingClientRect?.();if(!rect||rect.width<=0||rect.height<=0)return;
+      let nestedLabel='';
+      try{
+        const labelNode=node.querySelector?.('lightning-base-combobox-formatted-text[title]')||node.querySelector?.('.slds-listbox__option-text_entity [title]')||node.querySelector?.('.slds-listbox__option-text_entity')||node.querySelector?.('[data-label]')||node.querySelector?.('.slds-truncate[title]')||node.querySelector?.('.slds-truncate');
+        nestedLabel=labelNode?.getAttribute?.('title')||labelNode?.getAttribute?.('data-label')||labelNode?.textContent||'';
+      }catch{}
+      const label=norm(node.getAttribute?.('data-label')||node.getAttribute?.('label')||node.getAttribute?.('title')||nestedLabel||readable(node));
+      const value=String(node.getAttribute?.('data-value')||'');
+      if(!label||/^(search results|recent records|assigned|available)$/i.test(label)||/^action(?:advancedsearch|createnew)$/i.test(value)||/^(show all results|show more results(?: for .*)?|create new|new property|recent records|search all)$/i.test(label))return;
+      seenNodes.add(node);raw.push({el:node,label,id:lookupRecordId(node)});
+    };
+    for(const r of roots){try{r.querySelectorAll?.('[role="option"],lightning-base-combobox-item[data-value],.slds-listbox__option[aria-selected],.slds-listbox__option[data-value]').forEach(add);}catch{}}
+    const byLabel=new Map();
+    for(const item of raw){const key=norm(item.label);if(!byLabel.has(key))byLabel.set(key,[]);byLabel.get(key).push(item)}
+    const logical=[];
+    for(const items of byLabel.values()){
+      const byId=new Map();for(const item of items)if(item.id&&!byId.has(item.id))byId.set(item.id,item);
+      if(byId.size){for(const item of byId.values())logical.push(item);}
+      else if(items.length)logical.push(items[0]);
+    }
+    return logical;
   }
   async function setInputValue(input,value){
-    if(!input)return false;
+    if(!input||input.readOnly===true||input.getAttribute?.('aria-readonly')==='true'||input.getAttribute?.('aria-disabled')==='true')return false;
     const text=String(value||'');
     try{input.focus?.();input.click?.();}catch{}
     const proto=Object.getPrototypeOf(input),desc=Object.getOwnPropertyDescriptor(proto,'value');
@@ -372,7 +434,7 @@
       key('keydown',ch);set(String(input.value||'')+ch);
       try{input.dispatchEvent(new InputEvent('beforeinput',{bubbles:true,composed:true,inputType:'insertText',data:ch}));}catch{}
       try{input.dispatchEvent(new InputEvent('input',{bubbles:true,composed:true,inputType:'insertText',data:ch}));}catch{try{input.dispatchEvent(new Event('input',{bubbles:true,composed:true}));}catch{}}
-      key('keyup',ch);await sleep(18);
+      key('keyup',ch);await sleep(5);
     }
     try{input.dispatchEvent(new Event('change',{bubbles:true,composed:true}));}catch{}
     return true;
@@ -381,66 +443,192 @@
     const a=norm(actual||''),e=norm(expected||'');
     return !!a&&!!e&&a===e;
   }
+  function lookupClickCandidates(el){
+    const out=[];const add=x=>{if(x&&!out.includes(x))out.push(x)};
+    try{add(el?.closest?.('lightning-base-combobox-item'))}catch{}
+    try{add(el?.closest?.('[role="option"]'))}catch{}
+    try{add(el?.closest?.('.slds-listbox__option,.slds-listbox__item'))}catch{}
+    add(el);
+    try{el?.querySelectorAll?.('[role="option"],.slds-listbox__option,.slds-listbox__option-text_entity,lightning-base-combobox-formatted-text,button,a,.slds-truncate').forEach(add)}catch{}
+    return out.filter(isVisible).slice(0,8);
+  }
   async function activateLookupOption(root,hit,input,index,expectedLabel){
     if(!hit?.el)return false;
-    const candidates=[hit.el];
-    try{hit.el.querySelectorAll?.('button,a,[role=option],lightning-base-combobox-item,.slds-listbox__option,.slds-listbox__item,.slds-truncate').forEach(x=>{if(!candidates.includes(x))candidates.push(x);});}catch{}
-    for(const candidate of candidates){
-      fireClickSequence(candidate,{scroll:false});
-      await sleep(150);
-      const trigger=comboTrigger(root);
-      const live=norm(trigger?.getAttribute?.('data-value')||readable(trigger||''));
-      if(live===norm(expectedLabel)||live.includes(norm(expectedLabel))||!lookupInput(root))return true;
-      if(trigger?.getAttribute?.('aria-expanded')==='false')return true;
+    for(const candidate of lookupClickCandidates(hit.el)){
+      // Bring the suggestion into the active scroll container before clicking. Some
+      // Salesforce forms render their dropdown at a stale negative top coordinate.
+      fireClickSequence(candidate);
+      await sleep(110);
+      if(lookupSelectionMatches(root,hit.id,expectedLabel))return true;
+      // If the current list was re-rendered, the next candidate may no longer be live.
+      if(!candidate.isConnected)break;
     }
     try{
-      input?.focus?.({preventScroll:true});
-      const n=Math.max(0,Number(index)||0);
-      input.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',code:'Home',bubbles:true,composed:true}));
-      input.dispatchEvent(new KeyboardEvent('keyup',{key:'Home',code:'Home',bubbles:true,composed:true}));
-      for(let i=0;i<=n;i++){
-        input.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',code:'ArrowDown',bubbles:true,composed:true}));
-        input.dispatchEvent(new KeyboardEvent('keyup',{key:'ArrowDown',code:'ArrowDown',bubbles:true,composed:true}));
-        await sleep(25);
-      }
-      input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true,composed:true}));
-      input.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',bubbles:true,composed:true}));
-      await sleep(160);
-      const trigger=comboTrigger(root);
-      const live=norm(trigger?.getAttribute?.('data-value')||readable(trigger||''));
-      return !lookupInput(root)||live===norm(expectedLabel)||live.includes(norm(expectedLabel))||trigger?.getAttribute?.('aria-expanded')==='false';
+      input=lookupEditableInput(root)||lookupInput(root);input?.focus?.({preventScroll:true});
+      input.dispatchEvent(new KeyboardEvent('keydown',{key:'Home',code:'Home',bubbles:true,composed:true,cancelable:true}));
+      input.dispatchEvent(new KeyboardEvent('keyup',{key:'Home',code:'Home',bubbles:true,composed:true,cancelable:true}));
+      input.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',code:'ArrowDown',bubbles:true,composed:true,cancelable:true}));
+      input.dispatchEvent(new KeyboardEvent('keyup',{key:'ArrowDown',code:'ArrowDown',bubbles:true,composed:true,cancelable:true}));
+      input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true,composed:true,cancelable:true}));
+      input.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',bubbles:true,composed:true,cancelable:true}));
+      await sleep(140);return lookupSelectionMatches(root,hit.id,expectedLabel);
     }catch{return false;}
   }
 
+  function lookupClearButton(root){
+    for(const r of rootsFor(root)){
+      for(const selector of ['button[data-clear-selection-button]','button[title^="Clear "]','button[aria-label^="Clear "]']){
+        try{const button=r.querySelector?.(selector);if(button)return button;}catch{}
+      }
+    }
+    return null;
+  }
+  function lookupEditableInput(root){
+    const candidates=[];
+    for(const r of rootsFor(root)){
+      try{r.querySelectorAll?.('input[role="combobox"],input.slds-combobox__input[autocomplete="off"]').forEach(input=>{const rect=input.getBoundingClientRect?.();if(rect&&rect.width>0&&rect.height>0)candidates.push(input);});}catch{}
+    }
+    return candidates.find(input=>!input.readOnly&&input.getAttribute?.('aria-readonly')!=='true'&&input.getAttribute?.('aria-disabled')!=='true')||lookupInput(root);
+  }
+  async function clearLookupSelection(root){
+    let input=lookupInput(root);const clear=lookupClearButton(root);
+    const selected=!!(clear||input?.readOnly||input?.getAttribute?.('aria-readonly')==='true'||rootsFor(root).some(r=>{try{return !!r.querySelector?.('[data-input-pill]')}catch{return false}}));
+    if(!selected)return input;
+    if(clear){fireClickSequence(clear,{scroll:false});await sleep(100);}
+    for(let i=0;i<8;i++){
+      input=lookupEditableInput(root);
+      if(input&&!input.readOnly&&input.getAttribute?.('aria-readonly')!=='true'&&input.getAttribute?.('aria-disabled')!=='true')return input;
+      await sleep(70);
+    }
+    return input;
+  }
+  function lookupSelectionMatches(root,expectedId,expectedLabel){
+    const input=lookupInput(root),trigger=comboTrigger(root),actualId=lookupRecordId(trigger)||lookupRecordId(root);
+    if(expectedId&&actualId===String(expectedId))return true;
+    if(expectedId&&actualId&&actualId!==String(expectedId))return false;
+    const hasPill=!!(input?.readOnly||input?.getAttribute?.('aria-readonly')==='true'||rootsFor(root).some(r=>{try{return !!r.querySelector?.('[data-input-pill],lightning-pill,[data-selection-index],[data-selected-record]')}catch{return false}}));
+    if(!hasPill)return false;
+    const candidates=[input?.value,input?.getAttribute?.('data-value'),trigger?.getAttribute?.('data-value'),readable(trigger)].map(norm).filter(Boolean);
+    return !!norm(expectedLabel)&&candidates.includes(norm(expectedLabel));
+  }
   async function setLookup(root,payload){
     const wanted=typeof payload==='object'&&payload?payload:{displayValue:String(payload??''),recordId:''};
     const label=norm(wanted.displayValue||wanted.label||wanted.name||'');
     const expectedId=String(wanted.recordId||'').trim();
     if(!label&&!expectedId)return{ok:false,reason:'Empty lookup value'};
-    const input=lookupInput(root);if(!input)return{ok:false,reason:'Lookup search input could not be found'};
+    let input=await clearLookupSelection(root);
+    if(!input||input.readOnly||input.getAttribute?.('aria-readonly')==='true')return{ok:false,reason:'Could not clear the existing lookup selection before searching'};
     try{input.focus?.({preventScroll:true});input.click?.()}catch{}
     if(!(await setInputValue(input,label||expectedId)))return{ok:false,reason:'Lookup search input could not be updated'};
-    for(let attempt=0;attempt<16;attempt++){
-      await sleep(Math.min(70+attempt*20,210));
-      const options=lookupOptions(root);
+    let hit=null,lastOptions=[];
+    for(let attempt=0;attempt<10;attempt++){
+      await sleep(attempt===0?55:80);
+      const options=lookupOptions(root);lastOptions=options;
       const idHits=expectedId?options.filter(o=>o.id===expectedId):[];
-      const labelHits=label?options.filter(o=>lookupLabelMatches(o.label,label)):[];
-      const hits=idHits.length?idHits:labelHits;
-      if(hits.length>1)return{ok:false,reason:`Multiple lookup results matched ${wanted.displayValue||wanted.recordId}`};
-      const hit=hits[0];
-      if(!hit)continue;
-      const candidates=[hit.el];try{hit.el.querySelectorAll?.('[role="option"],lightning-base-combobox-item,button,a,.slds-listbox__option,.slds-listbox__item,.slds-truncate').forEach(x=>{if(!candidates.includes(x))candidates.push(x);});}catch{}
-      let clicked=false;
-      for(const candidate of candidates){fireClickSequence(candidate,{scroll:false});await sleep(80);clicked=true;const trigger=comboTrigger(root);const actualId=lookupRecordId(trigger)||lookupRecordId(root);if(!input.isConnected||trigger?.getAttribute?.('aria-expanded')==='false'||(expectedId&&actualId===expectedId))return{ok:true,mode:expectedId?'lookup-id-click':'lookup-label-click',selected:hit.label};}
-      if(!clicked)continue;
-      try{input.focus?.({preventScroll:true});input.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',code:'ArrowDown',bubbles:true,composed:true}));input.dispatchEvent(new KeyboardEvent('keyup',{key:'ArrowDown',code:'ArrowDown',bubbles:true,composed:true}));input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true,composed:true}));input.dispatchEvent(new KeyboardEvent('keyup',{key:'Enter',code:'Enter',bubbles:true,composed:true}));}catch{}
-      await sleep(100);const trigger=comboTrigger(root);const actualId=lookupRecordId(trigger)||lookupRecordId(root);if(!input.isConnected||trigger?.getAttribute?.('aria-expanded')==='false'||(expectedId&&actualId===expectedId))return{ok:true,mode:expectedId?'lookup-id-keyboard':'lookup-label-keyboard',selected:hit.label};
+      const labelHits=label?options.filter(o=>o.label===label):[];
+      if(idHits.length){hit=idHits[0];break;}
+      // When duplicate records share the exact name, choose the first in suggestion order.
+      if(labelHits.length){hit=labelHits[0];break;}
+    }
+    // If the saved ID and exact label are unavailable, use the first actual record
+    // suggestion. lookupOptions excludes "Show more results", "New ...", and headers.
+    if(!hit&&lastOptions.length)hit=lastOptions[0];
+    if(hit){
+      const hitId=String(hit.id||'');
+      const selectedLabel=hit.label||label;
+      if(await activateLookupOption(root,hit,input,0,selectedLabel)&&lookupSelectionMatches(root,hitId,selectedLabel))return{ok:true,mode:expectedId&&hitId===expectedId?'lookup-id-select':(selectedLabel!==label?'lookup-first-suggestion-fallback':(expectedId&&hitId&&hitId!==expectedId?'lookup-label-org-id-fallback':'lookup-label-select')),selected:selectedLabel,selectedRecordId:hitId};
+      // Re-resolve after Lightning rerenders; preserve ID/name preferences before
+      // falling back to the first real result again.
+      const freshOptions=lookupOptions(root);
+      const idHit=expectedId?freshOptions.find(o=>o.id===expectedId):null;
+      const freshLabels=freshOptions.filter(o=>o.label===label);
+      const freshHit=idHit||(freshLabels[0]||freshOptions[0]||null);
+      if(freshHit){
+        const freshId=String(freshHit.id||'');
+        const freshLabel=freshHit.label||label;
+        if(await activateLookupOption(root,freshHit,input,0,freshLabel)&&lookupSelectionMatches(root,freshId,freshLabel))return{ok:true,mode:expectedId&&freshId===expectedId?'lookup-id-select-retry':(freshLabel!==label?'lookup-first-suggestion-fallback-retry':(expectedId&&freshId&&freshId!==expectedId?'lookup-label-org-id-fallback-retry':'lookup-label-select-retry')),selected:freshLabel,selectedRecordId:freshId};
+      }
     }
     return{ok:false,reason:`Lookup result not found for ${wanted.displayValue||wanted.recordId}`};
   }
+  function classicMultiParts(base){
+    try{
+      if(String(base?.tagName||'').toLowerCase()!=='select'||!base.multiple||!base.id||/(?:_unselected|_selected)$/.test(base.id))return null;
+      const doc=base.ownerDocument||document,id=String(base.id);
+      const available=doc.getElementById(`${id}_unselected`),selected=doc.getElementById(`${id}_selected`);
+      const classicSelect=el=>String(el?.tagName||'').toLowerCase()==='select'&&el.multiple&&/MultiSelectPicklist\.handleMSP(?:Select|UnSelect)/.test(String(el.getAttribute?.('ondblclick')||''));
+      if(!classicSelect(available)||!classicSelect(selected))return null;
+      return{base,available,selected,id,doc};
+    }catch{return null}
+  }
+  function classicSelected(parts){
+    return [...(parts.base?.options||[])].filter(o=>o.selected).map(o=>({value:String(o.value||''),label:norm(o.textContent||o.label||o.value||'')})).filter(o=>o.value||o.label);
+  }
+  async function classicMove(parts,listName,labels,action){
+    const wanted=new Set(labels.map(norm).filter(Boolean));
+    const list=listName==='available'?parts.available:parts.selected;
+    // Reselect the requested visible options after every Classic widget rerender.
+    const matched=[];
+    for(const option of [...(list?.options||[])]){
+      const label=norm(option.textContent||option.label||''),value=norm(option.value||'');
+      option.selected=!!(wanted.has(label)||wanted.has(value));
+      if(option.selected)matched.push(label||value);
+    }
+    if(matched.length!==wanted.size)return{ok:false,reason:`Could not resolve ${listName} multi-select options`};
+    try{list.dispatchEvent(new Event('change',{bubbles:true,composed:true}));}catch{}
+    let invoked=false;
+    try{
+      const mover=window.MultiSelectPicklist?.[action];
+      if(typeof mover==='function'){mover.call(window.MultiSelectPicklist,parts.id);invoked=true;}
+    }catch{}
+    if(!invoked){
+      try{list.dispatchEvent(new MouseEvent('dblclick',{bubbles:true,composed:true,view:window,cancelable:true}));invoked=true}catch{}
+      if(!invoked){try{const arrow=parts.doc.getElementById(`${parts.id}_${action==='handleMSPSelect'?'right':'left'}_arrow`);(arrow?.closest?.('a')||arrow)?.click?.();invoked=true}catch{}}
+    }
+    await sleep(90);
+    return{ok:invoked,matched};
+  }
+  async function setClassicMulti(parts,wantedValues){
+    const options=[...(parts.base.options||[])].map(o=>({value:String(o.value||''),label:norm(o.textContent||o.label||o.value||'')})).filter(o=>o.value||o.label);
+    const resolved=wantedValues.map(value=>{
+      const v=norm(value);return options.find(o=>norm(o.value)===v||norm(o.label)===v)||null;
+    });
+    if(resolved.some(x=>!x))return{ok:false,reason:'One or more recorded Classic multi-select values are unavailable'};
+    const wanted=[...new Map(resolved.map(o=>[norm(o.value),o])).values()];
+    const current=()=>classicSelected(parts);
+    const currentIsWanted=()=>{
+      const a=current().map(o=>norm(o.value)).sort(),b=wanted.map(o=>norm(o.value)).sort();
+      return a.length===b.length&&a.every((v,i)=>v===b[i]);
+    };
+    if(currentIsWanted())return{ok:true,mode:'classic-multiselect-already-selected'};
+    // Remove extras first through Salesforce's own Classic MultiSelectPicklist API,
+    // rather than changing only its hidden submitted select.
+    for(let attempt=0;attempt<3;attempt++){
+      const extras=current().filter(o=>!wanted.some(w=>norm(w.value)===norm(o.value)));
+      if(!extras.length)break;
+      const labels=extras.map(o=>o.label||o.value);
+      const moved=await classicMove(parts,'selected',labels,'handleMSPUnSelect');
+      if(!moved.ok)return moved;
+      await sleep(70);
+      if(!current().some(o=>extras.some(x=>norm(x.value)===norm(o.value))))continue;
+    }
+    // Add missing target values by their visible labels; Classic helper list values
+    // are only positional indexes and must never be confused with the field values.
+    for(const wantedOption of wanted){
+      if(current().some(o=>norm(o.value)===norm(wantedOption.value)))continue;
+      const moved=await classicMove(parts,'available',[wantedOption.label||wantedOption.value],'handleMSPSelect');
+      if(!moved.ok)return moved;
+      await sleep(70);
+    }
+    for(let i=0;i<8;i++){if(currentIsWanted())return{ok:true,mode:'classic-multiselect-selected'};await sleep(65)}
+    return{ok:false,reason:'Salesforce Classic multi-select did not confirm the requested values'};
+  }
+
   async function setMulti(dual,values){
     const wanted=[...new Set(values.map(v=>String(v).trim()).filter(Boolean))];
     if(!validValues(wanted))return{ok:false,reason:'Invalid multi-select values'};
+    const classic=classicMultiParts(dual);
+    if(classic)return setClassicMulti(classic,wanted);
     let lists=classifyLists(dual);
     if(!lists.source||!lists.selected)return{ok:false,reason:'Salesforce dual-listbox lists could not be resolved'};
 
